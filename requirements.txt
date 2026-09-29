@@ -1,0 +1,8 @@
+# Gradio itself is installed by Hugging Face from `sdk_version` in README.md.
+# For local runs also install it:  pip install "gradio==6.28.0"
+openai>=1.60
+pyyaml>=6.0
+python-dotenv>=1.0
+# Only needed for evaluate.py and the tests:
+pandas>=2.0
+openpyxl>=3.1
