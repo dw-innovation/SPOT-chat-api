@@ -27,11 +27,12 @@ file is the shared context between them. Update it when a decision is made or a 
    numbers are hard-coded and nothing needs regular checking. Proposed link:
    https://findahelpline.com (verify it at implementation time). No query is built.
 3. **After a refusal for harmful intent.** The chat stays declined until the session is reset;
-   a neutral rephrase ("ok, just show me tall bridges") is not answered. The response carries a
-   lock signal and the frontend may disable the input until "start over". Because the server
-   is stateless, the lock travels in the state the client sends back; a client that drops it
-   bypasses the lock, which is accepted under decision 4. Interpretation to confirm: only
-   harmful-intent categories lock, off-topic requests do not.
+   a neutral rephrase ("ok, just show me tall bridges") is not answered. The API enforces this
+   itself: while the lock is present in the state it receives, every message is declined
+   without building a query, whether or not the frontend disables its input (it may, but that
+   is optional). Because the server is stateless, the lock travels in the state the client
+   sends back; a client that drops it bypasses the lock, which is accepted under decision 4.
+   Only harmful-intent categories lock; off-topic requests are declined without locking.
 4. **Over-blocking.** Catch the obvious cases and do not overdo it. Misuse cannot be prevented
    entirely, and blocking edge cases hinders regular work. When intent is unclear, answer.
 
