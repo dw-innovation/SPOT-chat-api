@@ -134,12 +134,15 @@ def main() -> None:
                         help="send tool_choice=required on the first call (if the server supports it)")
     parser.add_argument("--retries", type=int, default=3,
                         help="extra attempts for a sentence that produced no YAML (0 = none)")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="ask a LiteLLM proxy for fresh answers (same as LLM_NO_CACHE=1)")
     parser.add_argument("--out", default="evaluation_results.xlsx", help=".xlsx or .csv output")
     parser.add_argument("--jsonl", default="evaluation_results.jsonl",
                         help="predictions as JSONL for SPOT's benchmarking scripts")
     args = parser.parse_args()
 
     settings = load_settings()
+    settings.no_cache = settings.no_cache or args.no_cache
     client = make_client(settings)
     preflight(client, settings, args.model or settings.model)
     df = load_gold(args.excel, args.sheet)

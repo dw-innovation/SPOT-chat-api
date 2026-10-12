@@ -233,3 +233,94 @@ def test_synonym_of_the_users_descriptor_gets_a_note():
 def test_scan_ignores_descriptors_starting_with_an_article():
     objects, _ = descriptors_module.get_descriptors().find_in_text("show me a building next to a park")
     assert "a building" not in objects and "building" in objects
+
+
+# --------------------------------------------------------------------------- #
+# Fixes from the error analysis of the gold standard (package 3)
+# --------------------------------------------------------------------------- #
+
+@needs_tables
+def test_message_scan_leaves_ordinary_words_and_names_alone():
+    d = descriptors_module.get_descriptors()
+    objects, _ = d.find_in_text(
+        "There should be a tower in Brazil or Poland, at least 2 km apart, in a county that I have found")
+    assert objects == ["tower"]            # not shul, rail, upland, rampart, country, shave, sound
+
+
+@needs_tables
+def test_message_scan_still_fixes_typos():
+    d = descriptors_module.get_descriptors()
+    found = d.scan("restaurents and caffes near a forrest, a sprots shop and a speed kamera")
+    assert [name for name, _ in found.objects] == ["restaurant", "cafe", "forest", "sports shop", "speed camera"]
+    assert ("cafe", "caffes") in found.objects
+
+
+@needs_tables
+def test_message_scan_splits_words_written_as_one():
+    d = descriptors_module.get_descriptors()
+    found = d.scan("a firehose next to the Trainstation")
+    assert found.objects == [("fire hose", "firehose"), ("train station", "trainstation")]
+
+
+def test_note_for_an_unknown_name_keeps_the_users_word():
+    from spot_chat.descriptors import remote_entity_note
+    from spot_chat.tag_search import Match
+    matches = (Match("tower", ("tower", "steeple"), "1", 0.9),)
+    note = remote_entity_note("church tower", "entity 0", matches)
+    assert "reads it as: 'tower'" in note and "keep it as it is" in note
+    assert "switch to" not in note.lower()
+    assert remote_entity_note("steeple", "entity 0", matches) is None      # an exact descriptor
+
+
+@needs_tables
+def test_at_between_two_objects_is_listed_as_a_spatial_term():
+    d = descriptors_module.get_descriptors()
+    assert d.scan("a car park at the railway station").spatial == [("at", "100 m", "at")]
+    assert d.scan("at least 3 benches, look at the map").spatial == []
+
+
+def test_names_in_another_script_are_pointed_out():
+    from spot_chat.prompts import foreign_names
+    assert foreign_names("all 麦当劳 in 北京 please") == ["麦当劳", "北京"]
+    assert foreign_names("pharmacies in Karolino-Buhaz អ៊ុយក្រែន.") == ["អ៊ុយក្រែន"]
+    assert foreign_names("найди бары в Москве") == []          # the whole message is in that script
+    assert foreign_names("cafés in São Paulo") == []
+
+
+def test_distances_keep_the_users_unit():
+    message = "a fountain no further away than 0.5km from 8 lamps that are 1,5m apart"
+    args = {"area": {"type": "bbox"}, "entities": [
+        {"id": 0, "name": "fountain", "type": "nwr"},
+        {"id": 1, "name": "street lamp", "type": "cluster", "minPoints": 8, "maxDistance": "1.50 m"}],
+        "relations": [{"source": 0, "target": 1, "type": "distance", "value": "500 m"}]}
+    query, result = execute_tool(empty_query(), "new_query", json.dumps(args), message)
+    assert result.ok and query["relations"][0]["value"] == "0.5 km"
+    assert query["entities"][1]["maxDistance"] == "1.5 m"
+    query, _ = execute_tool(query, "update_relation", json.dumps({"source": 0, "target": 1, "value": "300 m"}),
+                            "make it 300 m")
+    assert query["relations"][0]["value"] == "300 m"
+
+
+@needs_tables
+def test_an_object_the_user_wrote_cannot_be_reported_as_a_limit():
+    message = "a car rental near an embassy with a fire exit that is open after 10 pm"
+    _, result = execute_tool(empty_query(), "report_limitations", json.dumps(
+        {"items": [{"category": "unsupported_attribute", "detail": "fire exit"}]}), message)
+    assert not result.ok and "add_entities" in result.message
+    _, result = execute_tool(empty_query(), "report_limitations", json.dumps(
+        {"items": [{"category": "unsupported_attribute", "detail": "open after 10 pm"}]}), message)
+    assert result.ok and result.limitations[0]["category"] == "unsupported_attribute"
+
+
+def test_something_is_not_an_object():
+    for name in ("something", "star-shaped object"):
+        _, result = run(empty_query(), "new_query", area={"type": "bbox"}, relations=[],
+                        entities=[{"id": 0, "name": name, "type": "nwr"}])
+        assert not result.ok and "what kind of object" in result.message
+
+
+@needs_tables
+def test_message_scan_reads_accented_words():
+    d = descriptors_module.get_descriptors()
+    assert d.scan("Cafés in der Nähe eines Bahnhofs").objects == [("cafe", "cafés")]
+

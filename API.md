@@ -25,10 +25,12 @@ Interactive docs are at `http://localhost:8000/docs` when `SPOT_DEBUG=1` is set.
 | `SPOT_TAG_SEARCH_URL` | SPOT's tag search, default `https://tags.findthatspot.io/api/search` |
 | `SPOT_API_KEY` | if set, every request needs the header `X-API-Key: <value>` |
 | `SPOT_CORS_ORIGINS` | comma-separated origins for browser calls, default `*` |
-| `SPOT_RATE_LIMIT` | `/chat` calls per minute and client address, default `30`; `0` turns it off |
+| `SPOT_RATE_LIMIT` | `/chat` calls per minute, default `30`; `0` turns it off. Counted per user if the caller sends the key and an `X-Spot-User` header, otherwise per client address |
+| `LLM_TURN_TIMEOUT` | seconds one `/chat` call may take before it ends with 504; default off. Set it below the timeout of whatever calls this API (`50` for the SPOT frontend). While it is set, failed model calls are not retried automatically |
 | `SPOT_DEBUG` | `1` enables `/docs`, fills `tool_calls` and makes `/health` detailed; off by default |
 
-See "Going public" at the end for what to set on a public server.
+See "Going public" at the end for what to set on a public server, and "Inside the SPOT
+frontend" for how this API fits into the existing SPOT system.
 
 ## POST /chat
 
@@ -82,6 +84,9 @@ Never parse the text of `reply` to find out what happened: `refusal` and `limita
 talk into writing links or HTML, and `limitations[].detail` repeats the user's words. Put them
 into the page as text (`textContent`, or your framework's default escaping), never as HTML, and
 do not turn URLs in `reply` into clickable links. The only link to render is `refusal.url`.
+If you render `reply` as Markdown because the lists and bold text read better, switch off links
+and images in the renderer (and raw HTML, if it is not off by default): an image is fetched from
+its address the moment the reply is shown.
 Names and values inside `query` are checked by the server: HTML tags and control characters are
 refused and each is at most 120 characters long, but escape them all the same.
 
@@ -193,29 +198,132 @@ configured, the number of loaded descriptors and the tag search URL.
 
 ## Status codes
 
+Every error has the same body, in the shape the other SPOT services use:
+
+```jsonc
+{"status": "error",
+ "message": "Too many messages. Please wait a moment.",   // always one string, safe to show
+ "detail": "Too many messages. Please wait a moment."}    // FastAPI's field: the same string, or a list of fields for 422
+```
+
 | Code | Meaning |
 |---|---|
 | 200 | fine |
-| 400 | empty message, a `model` the server does not offer, or the query you sent is invalid (`detail` says what) |
+| 400 | empty message, a `model` the server does not offer, or the query you sent is invalid (`message` says what) |
 | 401 | `SPOT_API_KEY` is set and the `X-API-Key` header is missing or wrong |
 | 411 | the request has no `Content-Length` header (browsers and HTTP libraries send it) |
 | 413 | the request is larger than 256 kB |
-| 422 | a field has the wrong shape: a `history` role other than `user`/`assistant`, a message over 2,000 characters, more than 200 history messages (`detail` lists the fields) |
-| 429 | too many messages from this client; the `Retry-After` header says how many seconds to wait |
-| 502 | the language model could not be reached. `detail` is a fixed sentence you can show; the reason is in the server log |
+| 422 | a field has the wrong shape: a `history` role other than `user`/`assistant`, a message over 2,000 characters, more than 200 history messages (`message` names the fields in one line, `detail` lists them) |
+| 429 | too many messages from this user or client; the `Retry-After` header says how many seconds to wait |
+| 502 | the language model could not be reached. `message` is a fixed sentence you can show; the reason is in the server log |
+| 504 | the turn took longer than `LLM_TURN_TIMEOUT`. `message` is a fixed sentence; nothing was changed |
 
-On 429 and 502, keep the user's message in the input field and let them send it again.
+On 429, 502 and 504, keep the user's message in the input field and let them send it again.
 
 ## Notes
 
 - A turn takes a few seconds, since the model may call several tools. Allow at least 60 seconds
-  of client timeout and show a typing indicator.
+  of client timeout and show a typing indicator. Without `LLM_TURN_TIMEOUT` a turn has no upper
+  limit of its own (up to 8 model calls of up to 120 seconds each).
 - `query.entities[].id` is stable inside one query, and relations refer to those ids. After a
   deletion, entities are renumbered, so always redraw from the returned query.
 - Cluster entities have `type: "cluster"` with `minPoints` and `maxDistance`.
 - Relative spatial terms ("next to") are converted into their distance; only the distance is in
   the query. Set `SPOT_INCLUDE_SPATIAL_TERM=1` to also get the wording.
-- The same YAML goes into SPOT's tag search and OSM query steps unchanged.
+- The query names objects and properties; it has no OSM tags. Turning it into the query the
+  OSM query API runs (`nodes` with `filters`, `edges`) is a tag search lookup per name, which the
+  SPOT frontend does itself (see the next section).
+
+## Inside the SPOT frontend
+
+How this API fits into the running SPOT system, from reading the SPOT repositories on
+2026-10-12 (`dw-innovation/SPOT-frontend` and the three backend services; nothing was run).
+The frontend's branch `feat/spot-chat-api` already calls `/chat`. As pushed on 2026-10-07 it
+is an older build, written against this API as it was before `refusal`, `limitations` and the
+limits existed. Newer frontend code for the current API exists but was not on GitHub when this
+was written, so everything below that describes the chat branch, and above all the list at the
+end, is a checklist to go through against the current frontend code, not a list of known bugs.
+
+**The path of a message.** The browser never calls a backend. It posts to the frontend's own
+route `/api/transformSentence`, which requires a signed-in user (NextAuth) and runs on the
+frontend's server (Vercel). With `SPOT_CHAT_API` set, that route posts
+`{message, query, history}` to `/chat` with the header `X-API-Key: $SPOT_CHAT_API_KEY`, and
+otherwise forwards the sentence to the Central NLP API as before. So:
+
+- `SPOT_API_KEY` is real protection here: it never reaches a browser. The user's session token
+  is not sent to this API; checking it would mean sharing the frontend's `NEXTAUTH_SECRET`,
+  with which it is encrypted.
+- No browser calls this API, so CORS can be closed.
+- Every request arrives from the frontend's server. The client address says nothing about the
+  user, so the rate limit counts per `X-Spot-User` when that header comes with the key. The
+  frontend already has the right value: `anonymizeUser(session)`, the pseudonym it sends to the
+  NLP API as `username`. Without the header all users share one limit of 30 messages a minute.
+- The route may run for 60 seconds (`maxDuration`); after that the platform ends it and the
+  user sees "UnknownError". Run this API with `LLM_TURN_TIMEOUT=50` so that a slow turn ends
+  with a 504 and a sentence instead.
+- The frontend does not send `model`; the server's `LLM_MODEL` decides.
+
+**From `query` to the query that is run.** `/chat` returns objects and properties by name. The
+frontend converts them (`src/lib/chatQuery.server.ts`): one tag search lookup per entity and
+per property (`limit=1`), the same steps as `adopt_generation.py` in the NLP API, and returns
+the result as `imr` next to the fields of `/chat`. `imr` is what the query panel edits and what
+goes to the OSM query API (`/validate-spot-query`, then `/run-spot-query`). Two consequences:
+
+- A name the tag search has nothing for fails the conversion with a 400 after `/chat` has
+  answered, and the turn is lost. This API does not refuse such a name. It only tells the
+  model when it does not find one: object names in its local table or the tag search, property
+  names in its local table (`data/SPOT_OSM-tag-bundles.xlsx`), which can differ from what the
+  tag search returns.
+- `/validate` here and `/validate-spot-query` there check different things. Ours checks the
+  chat query (names, distances, at most 3 objects, ids) and normalises it. Theirs checks the
+  converted query against a JSON schema, and that every node has a filter, ids and names are
+  unique, and no relation is doubled or points at itself. It accepts a query without nodes.
+
+**State.** The frontend keeps `history` and the last `query` in memory (`useChatStore`); both
+are gone on reload. Before each message it rebuilds `query` from its own query state, so
+edits made in the query panel reach the model: entities, clusters and relations are taken from
+the panel, properties from the last chat query while the entity still has the same name. This
+API accepts that shape as it is (there is a test for it). `history` is sent back as received,
+so the lock works without extra code. "New search" clears both, which is the reset.
+
+Saved and shared sessions do not include the chat: they store the map, the converted query and
+the first sentence, not `history`. A shared link therefore carries no conversation and no lock.
+
+**Errors.** The frontend shows the `message` field of an error body, which is why every error
+of this API has one. The chat branch reads `detail` as well, which still works.
+
+**What is logged where.** This API logs no message text. The frontend's route logs every chat
+message with the pseudonymous user name to the platform log, and sends the message text to
+Matomo for users who allowed analytics (`trackAction("chat", "message", ...)`); server errors
+are stored in MongoDB with the message. The NLP API stores every sentence with its result and
+the user name in MongoDB (`nlpRequests`); chat turns are stored nowhere in that form, which
+matters if real conversations are to be labelled later.
+
+**What the older chat branch lacked** (check each point against the current frontend code):
+
+1. A declined or unanswered first message. The first sentence goes through the search steps:
+   the (empty) query is converted, passes `/validate-spot-query`, and the area and search
+   steps follow as for a real search. When `refusal` is set or `query.entities` is empty, show
+   `reply` and stop there.
+2. `refusal.url` is not rendered, so the self-harm reply has no clickable helpline link, and a
+   locked chat looks like any other. See "Declined messages" for what to render.
+3. Replies are rendered as Markdown with clickable links and images. Switch both off (see
+   "Render everything as plain text").
+4. Send `X-Spot-User: anonymizeUser(session)` with the key (rate limit per user).
+5. On 429, 502 and 504 the typed message is cleared from the input; keep it. A 401 from this
+   API (wrong key) is turned into a 500, which is fine.
+6. `history` grows without limit and is refused with 422 above 200 messages. Send the latest
+   40 or so; the model reads 20.
+7. `limitations` is not shown. Optional, since `reply` mentions them.
+8. The README of the branch links this API as `dw-innovation/kid2-spot-chat`, a repository
+   that does not exist yet.
+
+**Deployment.** The three backend services run from the `docker-compose.yml` of
+`dw-innovation/SPOT` (OSM query on port 3000, NLP on 4000, tag search on 5000); this API
+is not in that file yet and would be a fourth service. Settings for it: `SPOT_API_KEY` (the
+same value as `SPOT_CHAT_API_KEY` in the frontend), `LLM_TURN_TIMEOUT=50`,
+`SPOT_CORS_ORIGINS` set to the frontend's address (any value other than `*` closes it, since
+no browser calls this API), `SPOT_DEBUG` unset.
 
 ## Going public
 
@@ -223,8 +331,8 @@ What the server does on its own, and what the deployment has to add.
 
 | Topic | In the server | To do when deploying |
 |---|---|---|
-| Who may call it | `SPOT_API_KEY` is checked if set. A key that ships in a browser frontend is readable by every visitor, so it only helps when the frontend's own backend calls this API. | Set `SPOT_CORS_ORIGINS` to the frontend's origin(s) instead of `*`. The server logs a warning at start while either is open. |
-| Request floods | `SPOT_RATE_LIMIT` per client address, counted in memory per worker process. | Put a reverse proxy in front for TLS and a second, global limit. Start uvicorn with `--forwarded-allow-ips=<proxy address>`, otherwise every user has the proxy's address and shares one limit. |
+| Who may call it | `SPOT_API_KEY` is checked if set. A key that ships in a browser frontend is readable by every visitor, so it only helps when the frontend's own backend calls this API, which is the case in SPOT. | Set `SPOT_API_KEY`. Set `SPOT_CORS_ORIGINS` to the frontend's origin(s) instead of `*` if browsers call the API directly; in SPOT they do not, so any value other than `*` closes it. The server logs a warning at start while either is open. |
+| Request floods | `SPOT_RATE_LIMIT` per user (`X-Spot-User`, believed only together with the key) or else per client address, counted in memory per worker process. | Put a reverse proxy in front for TLS and a second, global limit. If browsers call the API directly, start uvicorn with `--forwarded-allow-ips=<proxy address>`, otherwise every user has the proxy's address and shares one limit. |
 | Cost | Message, history and request size are capped; the client cannot pick a model outside `LLM_MODELS`. | Set a spending limit on the LLM account. |
 | Forged history | Only `user` and `assistant` turns are accepted. A reply that copies the system prompt word for word is replaced by an off-topic refusal. | Nothing. A client can still invent assistant turns or drop the lock, since the state lives in the client (accepted, see `docs/ROADMAP.md`, decision 3). |
 | Internals | `/docs`, `tool_calls` and the details of `/health` are off unless `SPOT_DEBUG=1`. Errors of the LLM provider go to the log, not to the client. | Leave `SPOT_DEBUG` unset in production. |

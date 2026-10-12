@@ -6,14 +6,16 @@ happens, while `evaluate.py` can simply drain it.
 
 from __future__ import annotations
 
+import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Iterator
 
 import openai
 
 from .config import Settings
-from .policy import Refusal, lock_in, merge_limitations, refusal_for
+from .policy import REFUSAL_CATEGORIES, Refusal, lock_in, merge_limitations, refusal_for
 from .prompts import get_system_prompt, quoted_prompt, user_turn
 from .tools import ToolResult, execute_tool, tool_specs
 
@@ -37,6 +39,7 @@ class ErrorEvent:
     text: str            # safe to show to anyone
     query: dict
     detail: str = ""     # the provider's error text, for logs and the evaluation scripts
+    timed_out: bool = False   # the turn ran into Settings.turn_timeout
 
 
 Event = ToolEvent | ReplyEvent | ErrorEvent
@@ -44,6 +47,7 @@ Event = ToolEvent | ReplyEvent | ErrorEvent
 
 HISTORY_ROLES = ("user", "assistant")
 MODEL_UNREACHABLE = "The language model could not be reached. Please try again in a moment."
+TURN_TOO_SLOW = "That took too long. Please try again, or describe the search in fewer words."
 
 
 def build_messages(conversation: list[dict], user_message: str, query: dict, history_turns: int) -> list[dict]:
@@ -96,6 +100,24 @@ DECLINE_NUDGE = (
 )
 
 
+_JSON_OBJECT_RE = re.compile(r"\{[^{}]*\}", re.DOTALL)
+
+
+def _decline_in_text(text: str) -> str | None:
+    """The arguments of a decline call that the model wrote into its reply instead of calling
+    the tool ('{"category": "violence"}'). Without this the request would count as answered."""
+    if len(text) > 600:
+        return None
+    for candidate in _JSON_OBJECT_RE.findall(text):
+        try:
+            arguments = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(arguments, dict) and str(arguments.get("category")) in REFUSAL_CATEGORIES:
+            return json.dumps({k: v for k, v in arguments.items() if k in ("category", "reply")})
+    return None
+
+
 def _fallback_reply(results: list[ToolResult]) -> str:
     done = [r.message for r in results if r.ok and r.name != "report_limitations"]
     return " ".join(done) if done else "I could not change the query. Could you rephrase the request?"
@@ -127,7 +149,16 @@ def run_turn(
     limitations: list[dict] = []
     plain_refusal = None       # a refusal in plain text that the model was asked to classify
 
+    started = time.monotonic()
+
     for round_no in range(settings.max_tool_rounds):
+        # With a turn limit, every call gets what is left of it, and the turn ends as an
+        # error once nothing is left: the caller keeps the state it had before.
+        time_left = settings.turn_timeout - (time.monotonic() - started) if settings.turn_timeout else None
+        if time_left is not None and time_left <= 0:
+            yield ErrorEvent(TURN_TOO_SLOW, start_query, timed_out=True,
+                             detail=f"turn limit of {settings.turn_timeout:g} s reached in round {round_no + 1}")
+            return
         try:
             response = client.chat.completions.create(
                 model=model or settings.model,
@@ -135,17 +166,29 @@ def run_turn(
                 tools=tool_specs(),
                 # Force a tool call on the first round if asked (used by the benchmark).
                 **({"tool_choice": "required"} if require_tool and round_no == 0 else {}),
+                **({"timeout": min(settings.timeout, time_left)} if time_left is not None else {}),
                 **settings.completion_kwargs(),
             )
         except openai.OpenAIError as exc:
-            yield ErrorEvent(MODEL_UNREACHABLE, query, detail=str(exc))
+            if time_left is not None and isinstance(exc, openai.APITimeoutError):
+                yield ErrorEvent(TURN_TOO_SLOW, start_query, detail=str(exc), timed_out=True)
+            else:
+                yield ErrorEvent(MODEL_UNREACHABLE, query, detail=str(exc))
             return
 
         message = response.choices[0].message
         # Check tool_calls directly: several servers report finish_reason "stop" with tool calls.
         if not message.tool_calls:
             text = _clean_reply(message.content)
-            if plain_refusal is None and not results and _REFUSAL_RE.search(text):
+            written = _decline_in_text(text)
+            if written:
+                _, result = execute_tool(start_query, "decline", written)
+                if result.refusal:
+                    yield ToolEvent(result, start_query)
+                    yield ReplyEvent(result.refusal.reply, start_query, refusal=result.refusal)
+                    return
+            # Also after tool calls: a search that was built and then refused is not an answer.
+            if plain_refusal is None and _REFUSAL_RE.search(text):
                 plain_refusal = text
                 messages += [{"role": "assistant", "content": text},
                              {"role": "user", "content": DECLINE_NUDGE}]

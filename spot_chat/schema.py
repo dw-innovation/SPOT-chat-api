@@ -75,6 +75,41 @@ def normalize_distance(raw) -> str:
     return f"{normalize_number(number)} {unit}"
 
 
+METRES = {"m": 1.0, "km": 1000.0, "mi": 1609.344, "yd": 0.9144, "ft": 0.3048}
+_DISTANCE_IN_TEXT_RE = re.compile(
+    r"(?<![\w.,])(\d[\d.,]*?)[.,]?\s*(" + "|".join(sorted(UNIT_ALIASES, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE)
+
+
+def in_metres(distance: str) -> float:
+    number, unit = normalize_distance(distance).split()
+    return float(number) * METRES[unit]
+
+
+def distances_in(text: str) -> list[str]:
+    """The distances written in a text, normalised ("0.5km" -> "0.5 km")."""
+    found = []
+    for number, unit in _DISTANCE_IN_TEXT_RE.findall(str(text)):
+        try:
+            found.append(normalize_distance(f"{number} {unit}"))
+        except ValueError:
+            pass
+    return found
+
+
+def as_written(distance: str, text: str) -> str:
+    """The user's own form of a distance: "500 m" becomes "0.5 km" if that is what the text
+    says and "500 m" is not in it. Unit and precision of the user are part of the query."""
+    written = distances_in(text)
+    if distance in written:
+        return distance
+    try:
+        metres = in_metres(distance)
+    except (ValueError, KeyError):
+        return distance
+    return next((d for d in written if abs(in_metres(d) - metres) < 1e-6 * max(metres, 1.0)), distance)
+
+
 def looks_like_distance(raw) -> bool:
     try:
         normalize_distance(raw)

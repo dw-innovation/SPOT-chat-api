@@ -30,9 +30,9 @@ from .query import (
     to_yaml,
     warnings_for,
 )
-from .descriptors import notes_for
+from .descriptors import get_descriptors, norm, notes_for
 from .policy import LIMITS, REFUSAL_CATEGORIES, Refusal, code_limits, limitation, refusal_for
-from .schema import OPERATORS, UNITS
+from .schema import OPERATORS, UNITS, as_written
 
 # --------------------------------------------------------------------------- #
 # Shared JSON schemas
@@ -203,7 +203,8 @@ def new_query(query, area, entities, relations=None):
     defaulted = [f"cluster {e['id']} ({e['name']}) got maxDistance {e['maxDistance']}"
                  for raw, e in zip(entities, fresh["entities"])
                  if e["type"] == "cluster" and not (isinstance(raw, dict) and raw.get("maxDistance"))]
-    note = f" Note: {'; '.join(defaulted)}, as intended when the user gives none." if defaulted else ""
+    note = (f" Note: {'; '.join(defaulted)}. That is the right value when the user gives none: "
+            "leave it as it is." if defaulted else "")
     return (f"Started a new query with {len(fresh['entities'])} entities and "
             f"{len(fresh['relations'])} relations.{note}")
 
@@ -532,6 +533,11 @@ def execute_tool(query: dict, name: str, raw_arguments, message: str | None = No
             f"(required: {', '.join(selected.parameters['required'])}).",
         )
 
+    if name == "report_limitations" and message:
+        mistake = not_a_limit(arguments.get("items"), message)
+        if mistake:
+            return query, ToolResult(name, arguments, False, mistake)
+
     working = copy.deepcopy(query)
     try:
         outcome = selected.fn(working, **arguments)
@@ -541,9 +547,47 @@ def execute_tool(query: dict, name: str, raw_arguments, message: str | None = No
         return query, ToolResult(name, arguments, False, f"could not apply {name}: {exc!r}")
     if not isinstance(outcome, Outcome):
         outcome = Outcome(outcome)
+    if message:
+        keep_user_units(working, message)
     return working, ToolResult(name, arguments, True, outcome.message, warnings_for(working),
                                new_notes(query, working, message), outcome.refusal,
                                outcome.limitations + code_limits(query, working))
+
+
+def not_a_limit(items, message: str) -> str | None:
+    """Why a report is wrong: the "unsupported detail" is an object or a property that SPOT
+    knows and that the user wrote. Such a part belongs in the query, not in the limits."""
+    descriptors = get_descriptors()
+    if descriptors is None or not isinstance(items, list):
+        return None
+    found = descriptors.scan(message)
+    objects = {norm(word): name for name, wrote in found.objects for word in (name, wrote)}
+    properties = {norm(word): name for name, wrote in found.properties for word in (name, wrote)}
+    for item in items:
+        if not isinstance(item, dict) or item.get("category") != "unsupported_attribute":
+            continue
+        detail = norm(item.get("detail") or "")
+        for article in ("a ", "an ", "the ", "with a ", "with an ", "with "):
+            if detail.startswith(article):
+                detail = detail[len(article):]
+        if detail in objects:
+            return (f"'{objects[detail]}' is an object SPOT can search for, not a limit. Add it as an "
+                    "entity (add_entities) and connect it with a contains or distance relation "
+                    "(add_relations). Report only the other items, if any.")
+        if detail in properties:
+            return (f"'{properties[detail]}' is a SPOT property, not a limit. Add it with "
+                    "add_properties. Report only the other items, if any.")
+    return None
+
+
+def keep_user_units(query: dict, message: str) -> None:
+    """Distances stay in the unit the user wrote ("0.5 km", not "500 m")."""
+    for relation in query["relations"]:
+        if relation.get("value"):
+            relation["value"] = as_written(relation["value"], message)
+    for entity in query["entities"]:
+        if entity.get("maxDistance"):
+            entity["maxDistance"] = as_written(entity["maxDistance"], message)
 
 
 def new_notes(before: dict, after: dict, message: str | None = None) -> list[str]:

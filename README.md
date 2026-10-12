@@ -44,6 +44,7 @@ kid2-spot-chat/
 │   └── compare.py          # scoring against the gold standard
 ├── data/                   # tag bundles + colour table
 ├── evaluate.py             # benchmark runner
+├── benchmark_report.py     # official benchmark scores per part of the gold set (dev / held-out)
 ├── testsets/               # behaviour test sets: refusals, injection, multi-turn, limits
 ├── run_testsets.py         # runs the test sets against the model
 ├── Dockerfile / docker-compose.yml
@@ -95,6 +96,8 @@ Copy `.env.example` to `.env` and fill it in.
 | `LLM_REASONING_EFFORT` | Optional, `low`/`medium`/`high` for reasoning models. |
 | `LLM_MAX_TOOL_ROUNDS` | Tool-call rounds per message (default `8`). |
 | `LLM_TIMEOUT` | Request timeout in seconds (default `120`). |
+| `LLM_NO_CACHE` | `1` asks a LiteLLM proxy for a fresh answer instead of a stored one (also `--no-cache` on `evaluate.py` and `run_testsets.py`). Use it for test runs: with the cache, a repeated run returns the first run's answers. Leave unset for servers that reject unknown fields. |
+| `LLM_TURN_TIMEOUT` | Limit in seconds for a whole chat turn, all tool rounds together (default off). The API answers 504 when it is reached. While it is set, failed model calls are not retried automatically. |
 
 ### SPOT tables & services
 
@@ -115,7 +118,7 @@ Copy `.env.example` to `.env` and fill it in.
 |----------|-------------|
 | `SPOT_API_KEY` | If set, every request needs the header `X-API-Key: <value>`. |
 | `SPOT_CORS_ORIGINS` | Comma-separated origins for browser calls (default `*`). |
-| `SPOT_RATE_LIMIT` | `/chat` calls per minute and client address (default `30`, `0` = off). |
+| `SPOT_RATE_LIMIT` | `/chat` calls per minute (default `30`, `0` = off), per user if the caller sends the key and `X-Spot-User`, otherwise per client address. |
 | `SPOT_DEBUG` | `1` enables `/docs`, fills `tool_calls` and makes `/health` detailed. Leave unset in production. |
 
 Requests are capped (message 2,000 characters, 200 history messages, 256 kB), `history` takes
@@ -241,6 +244,20 @@ Runs every sentence of the gold standard as a fresh chat and writes
 Useful flags: `--limit` for a quick check, `--model` to compare models, `--retries` for sentences
 that produce no YAML, `--sheet` to pick a gold sheet.
 
+The scores that count come from SPOT's own benchmark (`benchmarking/evaluate_results.py` in
+SPOT-data-generation), fed with the JSONL from above. It writes one row per sentence;
+`benchmark_report.py` adds those rows up again for two fixed parts of the gold set, so a prompt
+change is developed on one part and checked on the other:
+
+```bash
+python benchmark_report.py before_*_eval.xlsx --vs after_*_eval.xlsx   # mean of the runs, and the change
+python benchmark_report.py after_1_eval.xlsx --failures dev            # what failed, development part only
+```
+
+Two things to know before comparing runs: the model's answers vary from run to run by one to two
+points of perfect match, so compare three runs with three; and behind a LiteLLM proxy a repeated
+run returns the stored answers of the first one unless it is started with `--no-cache`.
+
 ---
 
 ## 🛡️ Behaviour test sets
@@ -262,6 +279,7 @@ python run_testsets.py --gold goldstandard_testing_dataset.xlsx      # + dialogu
 python run_testsets.py --section A --group self_harm,benign_twin     # a part of them
 python run_testsets.py --gold goldstandard_testing_dataset.xlsx --list   # read the cases, call no model
 python run_testsets.py --repeat 3                                    # is the result the same every time?
+python run_testsets.py --gold goldstandard_testing_dataset.xlsx --export testsets.xlsx   # the cases as a spreadsheet, call no model
 ```
 
 Each case is played like a chat through the API and every turn is checked. The summary gives

@@ -19,9 +19,12 @@ from collections import deque
 from typing import Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from spot_chat.agent import ErrorEvent, ReplyEvent, ToolEvent, run_turn
 from spot_chat.config import load_settings, make_client
@@ -36,11 +39,12 @@ CORS_ORIGINS = [o.strip() for o in os.getenv("SPOT_CORS_ORIGINS", "*").split(","
 # Debug mode shows what a public deployment keeps to itself: /docs, the tool calls of a turn
 # and the configuration in /health.
 DEBUG = os.getenv("SPOT_DEBUG", "").strip().lower() in ("1", "true", "yes")
-RATE_LIMIT = int(os.getenv("SPOT_RATE_LIMIT", "30"))     # /chat calls per minute and client; 0 = off
+RATE_LIMIT = int(os.getenv("SPOT_RATE_LIMIT", "30"))     # /chat calls per minute and user; 0 = off
 
 MAX_BODY_BYTES = 256_000        # one request, including history and query
 MAX_MESSAGE_CHARS = 2_000
 MAX_HISTORY_MESSAGES = 200      # the model only sees the latest ones (Settings.history_turns)
+MAX_USER_CHARS = 80             # of the X-Spot-User header, see check_rate
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("spot.api")
@@ -59,6 +63,27 @@ app = FastAPI(
 )
 
 
+def error_response(status_code: int, message: str, detail=None, headers=None) -> JSONResponse:
+    """Every error has the same body. `status` and `message` are what the other SPOT services
+    send and what the frontend's proxy reads; `detail` is FastAPI's own field."""
+    body = {"status": "error", "message": message, "detail": message if detail is None else detail}
+    return JSONResponse(body, status_code=status_code, headers=headers)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    return error_response(exc.status_code, str(exc.detail), headers=exc.headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """422: `detail` stays FastAPI's list of fields, `message` says the same in one line."""
+    errors = exc.errors()
+    message = "; ".join(
+        f"{'.'.join(str(part) for part in error['loc'][1:]) or 'body'}: {error['msg']}" for error in errors)
+    return error_response(422, message, detail=jsonable_encoder(errors))
+
+
 @app.middleware("http")
 async def limit_body_size(request: Request, call_next):
     """Refuse oversized requests before they are read. A request without a length cannot be
@@ -66,10 +91,9 @@ async def limit_body_size(request: Request, call_next):
     if request.method == "POST":
         length = request.headers.get("content-length", "")
         if not length.isdigit():
-            return JSONResponse({"detail": "A Content-Length header is required."}, status_code=411)
+            return error_response(411, "A Content-Length header is required.")
         if int(length) > MAX_BODY_BYTES:
-            return JSONResponse({"detail": f"The request is larger than {MAX_BODY_BYTES} bytes."},
-                                status_code=413)
+            return error_response(413, f"The request is larger than {MAX_BODY_BYTES} bytes.")
     return await call_next(request)
 
 
@@ -183,10 +207,17 @@ class RateLimiter:
 rate_limiter = RateLimiter()
 
 
-def check_rate(request: Request) -> None:
+def check_rate(request: Request, user: str | None = None) -> None:
+    """Counts per user if the caller names one, otherwise per client address. The name is only
+    believed from a caller that has shown the API key: behind the SPOT frontend all requests
+    come from the frontend's server, so the address says nothing about the user."""
     if RATE_LIMIT <= 0:
         return
-    wait = rate_limiter.wait_time(request.client.host if request.client else "unknown", RATE_LIMIT)
+    if API_KEY and user and user.strip():
+        client_id = "user:" + user.strip()[:MAX_USER_CHARS]
+    else:
+        client_id = request.client.host if request.client else "unknown"
+    wait = rate_limiter.wait_time(client_id, RATE_LIMIT)
     if wait:
         log.warning("chat outcome=rate_limited")
         raise HTTPException(status_code=429, detail="Too many messages. Please wait a moment.",
@@ -227,10 +258,11 @@ def health() -> dict:
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest, http: Request, x_api_key: str | None = Header(default=None)) -> ChatResponse:
+def chat(request: ChatRequest, http: Request, x_api_key: str | None = Header(default=None),
+         x_spot_user: str | None = Header(default=None)) -> ChatResponse:
     """One chat turn: runs the tools and returns the updated query and reply."""
     check_key(x_api_key)
-    check_rate(http)
+    check_rate(http, x_spot_user)
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="message must not be empty.")
     if request.model and request.model not in settings.models:
@@ -253,8 +285,8 @@ def chat(request: ChatRequest, http: Request, x_api_key: str | None = Header(def
         elif isinstance(event, ReplyEvent):
             reply, refusal, limitations = event.text, event.refusal, event.limitations
         elif isinstance(event, ErrorEvent):
-            log.error("chat outcome=llm_error detail=%r", event.detail)
-            raise HTTPException(status_code=502, detail=event.text)
+            log.error("chat outcome=%s detail=%r", "timeout" if event.timed_out else "llm_error", event.detail)
+            raise HTTPException(status_code=504 if event.timed_out else 502, detail=event.text)
 
     # Counts and categories only: what users write is not logged.
     log.info("chat outcome=%s locked=%s limitations=%s tools=%d history=%d chars=%d seconds=%.1f",

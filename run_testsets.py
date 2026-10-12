@@ -10,6 +10,7 @@ not, the query, reported limits, the reply).
     python run_testsets.py --gold data/goldstandard_testing_dataset.xlsx   # + derived dialogues
     python run_testsets.py --gold data/gold.xlsx --list     # show the cases, call no model
     python run_testsets.py --repeat 3                       # same result every time?
+    python run_testsets.py --gold gold.xlsx --export testsets.xlsx   # the cases as a spreadsheet
 
 Writes one row per turn to --out and prints a summary. Turns with a gold query also go to
 --jsonl and --gold-out, a prediction file and a gold sheet for SPOT's benchmarking scripts
@@ -94,6 +95,76 @@ def show(cases: list[Case]) -> None:
                 print(f"      decline: {' / '.join(expect.refusal)}")
             if expect.gold:
                 print("      " + to_yaml({"relations": [], **expect.gold}).rstrip().replace("\n", "\n      "))
+
+
+def export(cases: list[Case], titles: dict[str, str], path: str) -> None:
+    """Write the cases as a spreadsheet for reading: one sheet per section, one row per turn."""
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    def text_of(query) -> str:
+        if isinstance(query, str) or query is None:
+            return {"any": "(any query is built)", "empty": "(no query)",
+                    "unchanged": "(query unchanged)", None: ""}[query]
+        return to_yaml({"relations": [], **query}).rstrip()
+
+    def other_checks(expect) -> str:
+        parts = [f"must call: {', '.join(expect.uses)}" if expect.uses else "",
+                 f"must not call: {', '.join(expect.avoids)}" if expect.avoids else "",
+                 f"at most {expect.max_tool_calls} tool calls" if expect.max_tool_calls is not None else "",
+                 *(f"reply must match: {p.pattern}" for p in expect.reply_matches),
+                 *(f"reply must not contain: {p.pattern}" for p in expect.reply_lacks),
+                 *(f"query must not contain: {p.pattern}" for p in expect.query_lacks)]
+        return "\n".join(part for part in parts if part)
+
+    columns = {"case": 30, "group": 18, "turn": 6, "sent before by the client": 45, "user message": 60,
+               "expected: declined as": 20, "expected: limits reported": 22, "expected: query": 45,
+               "expected: other checks": 40}
+    rows = {section: [] for section in sorted({case.section for case in cases})}
+    for case in cases:
+        for number, turn in enumerate(case.turns, 1):
+            before = []
+            if number == 1:
+                before += [f"({t['role']}) {t['content']}" for t in case.history]
+                if case.query["entities"]:
+                    before.append("starting query:\n" + to_yaml(case.query).rstrip())
+                if case.tag_search:
+                    before.append("planted tag search result:\n"
+                                  + yaml.safe_dump(case.tag_search, allow_unicode=True, sort_keys=False).rstrip())
+            if turn.set_query is not None:
+                before.append("query edited by hand:\n" + to_yaml({"relations": [], **turn.set_query}).rstrip())
+            expect = turn.expect
+            rows[case.section].append({
+                "case": case.id, "group": case.group, "turn": number,
+                "sent before by the client": "\n".join(before),
+                "user message": turn.user,
+                "expected: declined as": " or ".join(expect.refusal) or "(answered)",
+                "expected: limits reported": ("(not checked)" if expect.limitations is None
+                                              else ", ".join(expect.limitations) or "(none)"),
+                "expected: query": text_of(expect.query),
+                "expected: other checks": other_checks(expect),
+            })
+    overview = pd.DataFrame([
+        {"section": section, "title": titles.get(section, ""), "group": group,
+         "cases": len({r["case"] for r in found if r["group"] == group}),
+         "turns": sum(r["group"] == group for r in found)}
+        for section, found in rows.items() for group in dict.fromkeys(r["group"] for r in found)])
+    with pd.ExcelWriter(path) as writer:
+        overview.to_excel(writer, sheet_name="Overview", index=False)
+        for section, found in rows.items():
+            name = f"{section} {titles.get(section, '')}"[:31]
+            pd.DataFrame(found, columns=list(columns)).to_excel(writer, sheet_name=name, index=False)
+        for sheet in writer.book.worksheets:
+            sheet.freeze_panes = "A2"
+            sheet.auto_filter.ref = sheet.dimensions
+            for index, cell in enumerate(sheet[1], 1):
+                cell.font, cell.fill = Font(bold=True), PatternFill("solid", fgColor="D0CECE")
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+                sheet.column_dimensions[get_column_letter(index)].width = columns.get(cell.value, 26)
+            for line in sheet.iter_rows(min_row=2):
+                for cell in line:
+                    cell.alignment = Alignment(wrap_text=True, vertical="top")
+    print(f"Wrote {path} ({len(cases)} cases, {sum(len(c.turns) for c in cases)} turns).")
 
 
 def row(result: TurnResult, run: int) -> dict:
@@ -201,10 +272,14 @@ def main() -> None:
     parser.add_argument("--group", help="only these groups, e.g. self_harm,benign_twin")
     parser.add_argument("--limit", type=int, help="only the first N cases")
     parser.add_argument("--list", action="store_true", help="print the selected cases and stop")
+    parser.add_argument("--export", metavar="FILE.xlsx",
+                        help="write the selected cases as a spreadsheet for reading and stop")
     parser.add_argument("--repeat", type=int, default=1, help="run every case N times")
     parser.add_argument("--workers", type=int, default=4, help="parallel cases")
     parser.add_argument("--model", help="override LLM_MODEL")
     parser.add_argument("--retries", type=int, default=2, help="extra attempts for a turn after an API error")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="ask a LiteLLM proxy for fresh answers (same as LLM_NO_CACHE=1)")
     parser.add_argument("--out", default="testset_results.xlsx", help=".xlsx output")
     parser.add_argument("--jsonl", default="testset_results.jsonl",
                         help="predictions of the gold turns, for SPOT's benchmarking scripts")
@@ -214,12 +289,16 @@ def main() -> None:
     titles, cases = collect(args)
     if not cases:
         raise SystemExit("No cases selected.")
+    if args.export:
+        export(cases, titles, args.export)
+        return
     if args.list:
         show(cases)
         print(f"\n{len(cases)} cases, {sum(len(c.turns) for c in cases)} turns.")
         return
 
     settings = load_settings()
+    settings.no_cache = settings.no_cache or args.no_cache
     client = make_client(settings)
     preflight(client, settings, args.model or settings.model)
     descriptors = get_descriptors()

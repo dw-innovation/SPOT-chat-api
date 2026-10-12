@@ -8,6 +8,8 @@ LLM_TEMPERATURE       optional, e.g. 0 for more deterministic output
 LLM_REASONING_EFFORT  optional, "low" / "medium" / "high" for reasoning models (gpt-oss, GPT-5)
 LLM_MAX_TOOL_ROUNDS   optional, default 8
 LLM_TIMEOUT           optional request timeout in seconds, default 120
+LLM_TURN_TIMEOUT      optional limit in seconds for a whole chat turn (all tool rounds), default off
+LLM_NO_CACHE          optional, 1 asks a LiteLLM proxy for a fresh answer instead of a cached one
 """
 
 from __future__ import annotations
@@ -35,6 +37,8 @@ class Settings:
     max_tool_rounds: int = 8
     history_turns: int = 10
     timeout: float = 120.0
+    turn_timeout: float = 0.0      # whole turn, all tool rounds; 0 = no limit
+    no_cache: bool = False         # skip the answer cache of a LiteLLM proxy (test runs)
 
     def completion_kwargs(self) -> dict:
         """Optional parameters, only sent when set (some servers reject unknown ones)."""
@@ -43,6 +47,10 @@ class Settings:
             kwargs["temperature"] = self.temperature
         if self.reasoning_effort:
             kwargs["reasoning_effort"] = self.reasoning_effort
+        if self.no_cache:
+            # A LiteLLM proxy returns the stored answer for an identical request, which hides
+            # the model's run-to-run variation. Other servers may reject the field.
+            kwargs["extra_body"] = {"cache": {"no-cache": True}}
         return kwargs
 
 
@@ -65,6 +73,8 @@ def load_settings() -> Settings:
         reasoning_effort=os.getenv("LLM_REASONING_EFFORT") or None,
         max_tool_rounds=int(os.getenv("LLM_MAX_TOOL_ROUNDS", "8")),
         timeout=float(os.getenv("LLM_TIMEOUT", "120")),
+        turn_timeout=float(os.getenv("LLM_TURN_TIMEOUT") or 0),
+        no_cache=os.getenv("LLM_NO_CACHE", "").strip().lower() in ("1", "true", "yes"),
     )
 
 
@@ -73,4 +83,6 @@ def make_client(settings: Settings) -> OpenAI:
         api_key=settings.api_key or "missing-api-key",
         base_url=settings.base_url,
         timeout=settings.timeout,
+        # The library repeats a failed call on its own, which would run past a turn limit.
+        max_retries=0 if settings.turn_timeout else 2,
     )

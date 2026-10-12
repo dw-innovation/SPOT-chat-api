@@ -169,6 +169,9 @@ def merge_properties(existing: list[dict], new: list[dict]) -> list[dict]:
 # Entities
 # --------------------------------------------------------------------------- #
 
+NOT_AN_OBJECT = frozenset({"something", "anything", "thing", "object", "stuff", "item"})
+
+
 def normalize_entity(raw, entity_id: int) -> dict:
     if not isinstance(raw, dict):
         raise QueryError("each entity must be an object with at least a name")
@@ -179,6 +182,13 @@ def normalize_entity(raw, entity_id: int) -> dict:
         raise QueryError(
             f"entity name '{name}' looks like an OpenStreetMap tag. Use the user's words "
             "in singular, e.g. 'bar' or 'train station' (or 'brand:<Brand>' for a bare brand)."
+        )
+
+    if name.lower() in NOT_AN_OBJECT or name.lower().endswith((" object", " thing")):
+        raise QueryError(
+            f"'{name}' does not say what kind of object is meant. If the user named no object, "
+            "build nothing for it, ask what kind of object it is, and report a shape or look "
+            "the user described with report_limitations (appearance)."
         )
 
     min_points = raw.get("minPoints")

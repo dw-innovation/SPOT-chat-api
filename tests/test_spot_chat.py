@@ -104,15 +104,16 @@ def test_properties_missing_required_values_are_rejected(prop):
 def test_unknown_descriptors_produce_suggestions_once():
     query, result = run(empty_query(), "new_query", area={"type": "bbox"}, relations=[], entities=[
         {"id": 0, "name": "nepalese restaurant", "type": "nwr",
-         "properties": [{"name": "colour", "value": "pale blue"}]}])
+         "properties": [{"name": "colour", "value": "blueish"}]}])
     assert result.ok
     assert any("Closest descriptors: restaurant," in n for n in result.notes)
-    assert any("colour 'pale blue'" in n and "blue" in n for n in result.notes)
+    assert any("colour 'blueish'" in n and "blue" in n for n in result.notes)
     _, again = run(query, "add_properties", entity_id=0, properties=[{"name": "vegan"}])
     assert again.notes == []                          # already reported, not repeated
     _, known = run(empty_query(), "new_query", area={"type": "bbox"}, relations=[],
-                   entities=[{"id": 0, "name": "italian restaurant", "type": "nwr"}])
-    assert known.notes == []
+                   entities=[{"id": 0, "name": "italian restaurant", "type": "nwr",
+                              "properties": [{"name": "colour", "value": "pale blue"}]}])
+    assert known.notes == []                          # a shade of a listed colour is kept
 
 
 @needs_tables

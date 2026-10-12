@@ -241,3 +241,12 @@ def test_api_returns_limitations(monkeypatch):
                                     "message": LIMITS["superlative"].message}]
     assert body["refusal"] is None and body["changed"] is True
     assert to_export(empty_query()) != body["query"]
+
+
+def test_a_decline_written_as_text_still_declines():
+    """gpt-oss sometimes writes the arguments of the call into its reply instead of calling."""
+    from spot_chat.agent import _decline_in_text
+    assert json.loads(_decline_in_text('**[decline]**{\n  "category": "violence"\n}')) == {"category": "violence"}
+    assert json.loads(_decline_in_text('{"category": "off_topic", "reply": "Only map searches."}'))["reply"]
+    assert _decline_in_text('I set {"category": "restaurant"} for you.') is None
+    assert _decline_in_text("Bars within 50 m of a river in Cologne.") is None

@@ -9,14 +9,23 @@ file is the shared context between them. Update it when a decision is made or a 
   `kid2-spot-datageneration/benchmarking/evaluate_results.py`, fed with the JSONL that
   `evaluate.py --jsonl` writes. Gold sheet `descriptor_updates_13052026` (282 sentences) in
   `data/goldstandard_testing_dataset.xlsx` (git-ignored).
-- Latest run `chat-02`: area 93.6%, entity perfect match 89.1%, properties 74.6%, distance
-  relations 84.7%, contains relations 91.5%, relative spatial terms 80.4%.
-  Weakest: brand/name standalone 38.5% perfect match, cuisine property 54.5%, typos 56.0%.
+- Scores after package 3 (2026-10-12, `GPT-oss-120b`, mean of 5 uncached runs; in brackets the
+  baseline before it, mean of 3 runs): perfect match 75.0% (69.4%), area 95.4% (94.4%), entity
+  perfect match 92.5% (89.9%), properties 78.7% (77.2%), distance relations 85.8% (84.1%),
+  contains relations 94.6% (88.7%), relative spatial terms 84.6% (81.2%).
+  Weakest: cuisine property 49%, brand/name standalone 53% perfect match, typos 64%.
+  One run of each is stored as `chat-03` (baseline) and `chat-04` in `benchmarking/results/`.
+- Single runs differ by 1 to 2 points of perfect match, and the LLM endpoint returns stored
+  answers for repeated requests. Compare three runs with three, started with `--no-cache`.
 - The gold standard only has one-shot sentences. Refusals, prompt injection, multi-turn
   behaviour and unsupported requests are tested with the artificial sets of package 2
   (`python run_testsets.py`, baseline below). Real user data is not labelled yet.
-- The `chat-02` scores above predate package 1. The prompt grew by about a third and the model
-  has two more tools, so re-run the official benchmark before comparing anything to them.
+- The SPOT frontend already has a branch that calls this API (`feat/spot-chat-api`, see
+  package 5). What is on GitHub is an older build from before packages 1 and 4; newer frontend
+  code for the current API exists but has not been read (not pushed as of 2026-10-12).
+- `chat-02` (before packages 1 and 4) scores 67.7% perfect match when it is scored again today;
+  the file stored then says 68.1%. The benchmark's result depends on the environment it runs
+  in (see package 3), so always score the runs to be compared in one go.
 
 ## Decisions (made 2026-10-12)
 
@@ -117,10 +126,130 @@ file is the shared context between them. Update it when a decision is made or a 
      author, so they show tendencies, not rates; other languages are covered by a handful
      of cases only; the templated wording of the derived dialogues has been skimmed, not
      reviewed sentence by sentence.
-3. **Score improvement.** Last (after package 5), because packages 1 and 4 shift the scores. Per-sentence error analysis
-   of the official benchmark results; separate model errors from gold or metric
-   inconsistencies. Hold out part of the gold set (or validate on an older sheet) to avoid
-   overfitting the prompt to 282 sentences.
+3. **Score improvement.** FIRST ROUND DONE 2026-10-12 (it came last because packages 1 and 4
+   shift the scores). Perfect match on the official benchmark went from 69.4% to 75.0%; what
+   is left is listed at the end of this item. What exists now:
+   - **Before the work started** (handover points 1 and 2). The LLM endpoint is a LiteLLM
+     proxy and does cache: the same request came back in 0.1 s with the same response id,
+     also at temperature 1. `cache: {"no-cache": true}` in the request body switches it off.
+     That is `LLM_NO_CACHE=1`, or `--no-cache` on `evaluate.py` and `run_testsets.py`; it is
+     off by default because other servers may reject the field. All numbers below are from
+     uncached runs. New baseline: 69.4% perfect match (three runs, 68.8 to 70.2).
+   - **Held-out part.** `benchmark_report.py` splits the gold set by a hash of the sentence:
+     198 sentences to develop on, 84 held out. It adds up the per-sentence file of the
+     official benchmark for both parts, averages several runs and prints the change between
+     two variants; `--failures dev` lists what failed. Only failures of the dev part were
+     read. Result (5 runs after, 3 before): dev 68.4% -> 74.2%, held-out 71.8% -> 76.7%.
+     The held-out part gained about as much as the dev part, so the changes are not fitted
+     to the sentences that were read. One run moves the held-out score by up to 7 points
+     (84 sentences), so look at its mean only.
+   - **What was wrong, and what was changed** (model errors, in order of effect):
+     - *The tool notes talked the model out of the user's words.* For a name that is no
+       descriptor ("church tower", "cable car station", "railway", "diving school") the
+       note listed what the tag search returns and said "switch to that descriptor". The
+       gold keeps the user's words, and so does the pipeline: the frontend looks every
+       name up in the tag search anyway. The notes and the prompt now say to keep the
+       user's own word (typos fixed, singular) and to split off only a cuisine, religion,
+       material or colour. A shade of a listed colour ("dark orange") is kept too.
+     - *The vocabulary hint under each message was full of false typo corrections*:
+       "should" -> shul, "Poland" -> upland, "county" -> country, "Brazil" -> rail,
+       "apart" -> rampart, "firehose" -> firehouse; 234 different ones on the dev
+       sentences, now 48, nearly all real typos. A word is corrected only if it is one
+       slip away (two for long words), keeps its first letter, is not an ordinary English
+       word (a short list in `descriptors.py`) and is not written with a capital inside a
+       sentence. Two words written as one are split ("firehose", "trainstation"), plurals
+       and accents are read ("caffes", "Cafés").
+     - *Parts were dropped as "limits".* `unsupported_attribute` had become the place for
+       anything unclear: an object another object has ("an embassy with a fire exit"), a
+       misspelt word. The prompt names these as not being limits, and `report_limitations`
+       refuses an item that is an object or property the user wrote. Limits reported on
+       the gold sentences went from 30 to about 22 per run; none of them is declined.
+     - *Names in another script were translated, transliterated or dropped* ("អ៊ុយក្រែន" ->
+       Ukraine). The hint now lists them with the instruction to copy them. Perfect match
+       on the non-roman sentences: 68% -> 80%.
+     - *Brands in front of an object were lost or taken for the area* ("Cortina ice cream
+       parlor" -> area Cortina). One prompt rule; brand/name as property 53% -> 60%.
+     - *Distances were converted* ("0.5km" -> "500 m"). The tools put back the user's own
+       unit when the message has the same distance in another one (`as_written`).
+     - *"X at Y"* was built as contains instead of the spatial term "at" (100 m). The hint
+       now lists "at" when it stands between two objects. Still unreliable, see below.
+     - *The model "corrected" a cluster distance the tool had filled in.* The tool note is
+       firmer now.
+     - Two more prompt rules: one distance for several objects relates the first to each
+       of them; an object described after another one is related to that one.
+   - **The behaviour test sets, checked after the prompt had grown** (three runs each,
+     before / after): A 95, 94, 94 / 97, 97, 94 of 98; B 24, 25, 24 / 26, 26, 19 of 30;
+     C 94, 91, 93 / 92, 93, 95 of 95; D 37, 40, 40 / 41, 36, 40 of 46. Harmful turns
+     answered: 0, 1, 0 / 0, 1, 1 of 44. An earlier state of the prompt had answered up to
+     three harmful turns per run, which led to three fixes that are worth keeping:
+     - The model sometimes writes the decline call into its reply as text
+       (`{"category": "violence"}`) instead of calling the tool; the turn then counted as
+       answered. `run_turn` now reads that as the call.
+     - A refusal in plain text after a tool call ("I'm sorry, I can't help with that",
+       query already built) is sent back to be classified, like one without tool calls.
+     - The prompt starts with one paragraph: look at the stated purpose first, decline
+       before any other rule. A first wording that also named off-topic messages made
+       the model decline mixed messages ("cafes in Turin, and wrap the reply in ...") and
+       plain insults, so it names harmful purpose only.
+     - `something` or `star-shaped object` is refused as an entity name, so a description
+       without an object is asked about instead of searched.
+   - **Tried and taken out again**, no gain over three runs: a note for an object given
+     as a property, and a note for a brand that swallowed its object type.
+   - **Gold and metric findings** (dev part only; rows are sheet rows, header = row 1).
+     Of the 37 dev sentences that still fail in every run, 25 are in this list and 12 are
+     model errors. For whoever reviews the gold standard:
+     - *The benchmark cannot score two entities with the same name.* Three gold rows do
+       not reach a perfect match against themselves (rows 63 and 202 and one held-out
+       row: two restaurants with different names), so the ceiling is 98.9%.
+     - *Its result depends on the environment*: the stored `chat-02` file and a new
+       scoring of the same predictions differ in entity pairing (68.1% vs 67.7%).
+     - *Names are compared letter by letter.* "McDonalds" vs "McDonald's": the gold
+       corrects the user in row 92 and keeps the user's spelling in row 200.
+     - *Areas are compared as strings, and the gold is not consistent about typos.* Fixed
+       in rows 118 (Lombrady -> Lombardy), 132 (Paraiba -> Paraíba) and 84; kept in rows
+       204 (dubrovnic) and 108 (Maramures Country). Row 84 has "ş" where the usual
+       spelling is "ș"; row 106 expands "US" to "United States"; row 256 drops "Russia";
+       row 26 keeps the brackets of "Plovdiv (Province)".
+     - *Cuisine.* "italian restaurant" stays one descriptor in rows 10, 24 and 43, and is
+       split into restaurant + cuisine in rows 169, 173 and 213. This is the whole
+       cuisine score (49%); no rule can satisfy both halves.
+     - *Brands.* Row 252 has "dm market" and "burger king" as plain objects, without
+       `brand:`.
+     - *Single rows.* Row 200: "near" is 100 m (table: 250 m). Row 10: cluster distance
+       50 m beside a 100 m relation (elsewhere the cluster takes the relation's distance).
+       Row 46: material "concrete_block", an OSM value. Rows 253 and 248: the typos
+       "baskeball court" and "backery" are in the gold names.
+     - *Against the decisions of package 1.* Row 113 builds "at least 50.5 metres away" as
+       a distance relation, and row 63 builds "either A or B" as two required objects.
+       The chatbot reports both as limits (`min_distance`, `alternatives`). Either the
+       gold or the limit has to give way; decide before the next round.
+     - *Which object a relation belongs to* is open to reading in rows 55, 61, 94, 95,
+       198, 253, 273 and 258; for 273, 274 and 279 the annotators' own comments say so.
+     - Smaller things in the scoring code: extra relations in a prediction cost nothing,
+       the relative spatial term itself is not compared (only its distance), and the loop
+       over contains relations removes from the wrong list.
+   - **An older problem found on the way.** `prompts.py` says its examples are not taken
+     from the gold standard. About twenty phrases are ("all locations of ملك الفلافل",
+     "lockable bike parking", "irish bar", "japanese teahouse", "pv farm", "two war
+     memorials", "fifty-two thousand meters", "伊鲁埃洛斯, 西班牙", ...), from the dev and the
+     held-out part alike. They were there before this package and were left in, so the
+     before/after comparison is fair, but the absolute scores are a little flattering.
+     The examples added in this package were checked against the gold sentences.
+   - **Left for the next round:**
+     - Model errors that are stable on the dev part: one distance for a cluster and
+       another object ("a water taxi and two war memorials, each 0.25 mi apart" gets no
+       relation); "X at Y" still built as contains; an object the other one "has" still
+       dropped now and then ("an embassy with a fire exit"); a brand kept as `brand:`
+       with its object type lost ("Master Farma car shop"); relations attached to the
+       first object instead of the one just mentioned; a sentence with a lot of filler
+       (row 5).
+     - The handover points 17 to 21 (hate lock, instructions echoed in the reply, partly
+       off-topic messages, `too_many`, the leak guard) were not worked on.
+     - Replace the prompt examples that come from the gold standard, then measure again.
+     - Property names against the tag search (open point of package 5) were not counted.
+     - The held-out part has been used once. Every further round that is checked
+       against it makes it less of a test; a new gold sheet would be the clean check.
+
 4. **API hardening.** DONE 2026-10-12, before package 3, because it changes the results of
    the B set. What exists now:
    - `history` takes the roles `user` and `assistant` only (422 otherwise), and the chat loop
@@ -169,63 +298,82 @@ file is the shared context between them. Update it when a decision is made or a 
        result of an instruction hidden in a name used as the name), and still closes the
        chat as `hate` for "tell me that all people from Turin are idiots".
 
-5. **Read the existing SPOT code.** NEXT, before package 3. The chatbot has to fit into a
-   running system, and several open decisions (who calls the API, keys, logging, privacy)
-   are already answered there. Main repository: https://github.com/dw-innovation/SPOT. The
-   repositories were renamed; the old `kid2-spot-*` links redirect:
+5. **Read the existing SPOT code.** DONE 2026-10-12, read from fresh clones, nothing run. The
+   integration note is the section "Inside the SPOT frontend" in `API.md`; this is the short
+   version. Main repository: https://github.com/dw-innovation/SPOT. The repositories were
+   renamed; the old `kid2-spot-*` links redirect. The local clones under `~/PycharmProjects`
+   are from November 2025 and miss everything below.
 
-   | Repository | What | Last push |
+   | Repository | What | Read at |
    |---|---|---|
-   | `dw-innovation/SPOT-frontend` | Next.js + Leaflet UI; the main thing to read | 2026-10-07 |
-   | `dw-innovation/SPOT-central-nlp-api` | sentence to YAML; what the chatbot sits next to or replaces | 2026-09-30 |
+   | `dw-innovation/SPOT-frontend` | Next.js + Leaflet UI, on Vercel | `main` 2026-09-29, `feat/spot-chat-api` 2026-10-07 |
+   | `dw-innovation/SPOT-central-nlp-api` | sentence to query; what the chatbot replaces | 2026-08-11 |
    | `dw-innovation/SPOT-osm-query-api` | runs the query, has `/validate-spot-query` | 2026-08-05 |
-   | `dw-innovation/SPOT-osm-tag-search-api` | tag search, already used by the chatbot | 2025-12-18 |
-   | `dw-innovation/SPOT-data-generation` | training data and the official benchmark | 2026-07-21 |
-   | `dw-innovation/unsloth-training` | model training; not relevant here | 2025-11-10 |
+   | `dw-innovation/SPOT-osm-tag-search-api` | tag search, already used by the chatbot | 2025-12-18 (not read again) |
+   | `dw-innovation/SPOT-data-generation` | training data and the official benchmark | not read again |
+   | `dw-innovation/SPOT` | `docker-compose.yml` for the three backend services | 2026-09-30 |
 
-   First look on 2026-10-12 (a handful of files read, nothing run):
-   - The browser never calls a backend service. It calls the frontend's own routes
-     (`src/app/api/*/route.ts`), and those forward the request from the server
-     (`src/lib/createUpstreamRoute.ts`, `src/lib/proxyUpstream.ts`). Backend addresses are
-     server-side variables (`NLP_API`, `OSM_API`), not `NEXT_PUBLIC_*`.
-   - Every forwarded route requires a signed-in user (NextAuth: Azure AD, Google, GitHub or
-     credentials) and answers 401 otherwise. The user's session token is passed upstream as
-     `Authorization: Bearer <token>`.
-   - `/api/transformSentence` sends `{sentence}` and the server adds `environment`, an
-     anonymised `username` and the `model`. So the client does not choose the model there
-     either. The route has `maxDuration = 60` seconds.
-   - Errors: upstream 5xx and network failures are stored server-side with the prompt and
-     the query; the client gets `{status: "error", message}`, read from the upstream
-     response's `message` field.
-   - The NLP API stores every request with the anonymised username in MongoDB
-     (`nlpRequests`), and the frontend logs the outgoing prompt.
+   What was found:
+   - **The frontend integration already exists.** The branch `feat/spot-chat-api` (Tilman M,
+     2026-09-29 to 2026-10-07, not merged) calls `/chat` from the route
+     `/api/transformSentence` when `SPOT_CHAT_API` is set, sends `X-API-Key`, keeps `query`
+     and `history` in a store, shows a chat panel in place of the prompt input after the first
+     sentence, and converts the chat query into the query the OSM API runs with its own tag
+     search lookups. It was written against the API as it was before packages 1 and 4, so it
+     knows nothing of `refusal`, `limitations` or the limits. This pushed state is an older
+     build (said by the project owner on 2026-10-12); newer code for the current API exists
+     and was not available to read. The frontend-specific findings below and the numbered
+     list at the end of the integration note are therefore a checklist for that newer code,
+     not confirmed gaps. The findings about the system around it (who calls the API, login,
+     60 second route, error format, sessions, logging, deployment) do not depend on the build.
+   - **Who calls the API** (handover point 4): the frontend's server, for signed-in users
+     only, with a key that never reaches a browser. So the key is real protection, CORS can
+     be closed, and the client address is the frontend's for every user.
+   - **The lock works there without extra code**: the branch sends `history` back as received,
+     and "New search" clears it. Saved and shared sessions do not contain the chat, so a
+     shared link carries neither a conversation nor a lock.
+   - **A declined first message is run as a search.** The first sentence goes through the old
+     search steps, and an empty query passes `/validate-spot-query`. This is the most visible
+     gap, and it is in the frontend.
+   - **Replies are rendered as Markdown with links and images**, against the plain-text rule
+     of package 4, and `refusal.url` is not rendered, so the self-harm reply has no link.
+   - **The bearer token is no option for us.** The OSM query API checks it only with
+     `AUTH_ENABLED` (HS256 with `JWT_SECRET`); the NLP API does not check it at all and
+     allows every origin. The chat route does not forward it.
+   - **The NLP API**: `{sentence, model, username, environment}` in,
+     `{imr, display, inputSentence, rawOutput, modelVersion, status, timestamp}` out; every
+     error is a 400 with `{status, message}`; up to 10 attempts with growing pauses, far
+     beyond the route's 60 seconds; every sentence is stored in MongoDB (`nlpRequests`) with
+     result and pseudonymous user name. An endpoint of ours in that format is not needed: the
+     frontend converts our query itself and returns it as `imr`.
+   - **Logging and privacy**: the frontend logs every chat message with the pseudonymous user
+     name and sends it to Matomo for users who allowed analytics. The site's privacy statement
+     already covers "your search query and the according system output", but its list of
+     third parties names no language model provider.
+   - **Deployment**: frontend on Vercel, the three backend services from one compose file on
+     ports 3000, 4000 and 5000. The chatbot is not in that file.
 
-   What this probably means for the chatbot, to confirm while reading:
-   - The chat would be called through a new frontend route built with `createUpstreamRoute`,
-     so `SPOT_API_KEY` or a check of the bearer token is real protection, CORS can be closed
-     to browsers altogether, and the rate limit has to count per user, not per address: all
-     requests arrive from the frontend's server. This answers handover point 4.
-   - Our error responses use FastAPI's `detail`, the proxy reads `message`. Without a
-     change every chatbot error reaches the user as "Unknown error occurred".
-   - A chat turn has to fit into the 60 seconds of the route.
-   - The existing services log prompts per anonymised user. Our log deliberately has no
-     message text; decide whether the chatbot should match the existing practice (needed
-     for labelling real user data, see "Where we are") or stay as it is.
+   What was changed here (small, all tested; 144 tests pass):
+   - Every error body is `{status: "error", message, detail}`. `message` is what the
+     frontend's shared proxy shows; without it every chatbot error read "Unknown error
+     occurred" there. `detail` is unchanged.
+   - The rate limit counts per user when the caller sends the key and an `X-Spot-User`
+     header, otherwise per address as before.
+   - `LLM_TURN_TIMEOUT` (off by default): a limit in seconds for a whole turn; the API
+     answers 504 with a fixed sentence and changes nothing. Meant to be 50 behind the
+     frontend's 60 second route. While it is set, the OpenAI client's automatic retries are
+     off, since a repeated call would run past the limit. Off by default, so benchmark runs
+     are unaffected.
+   - A test that the query the frontend rebuilds from its own state is accepted as it is.
 
-   To do in the package:
-   - Frontend: how the YAML from `transformSentence` is stored, edited (query editor, graph
-     view) and validated; where chat state (`query`, `history`, the lock) would live; how
-     sessions are saved and shared (`saveSession`, `getSession`), since a shared session
-     would carry a chat history; how errors and feedback are shown.
-   - NLP API: whether and how the bearer token is checked (`.env.example` has a
-     `JWT_SECRET`, but no check was visible in `app/main.py` at first glance); the request
-     and response format of `/transform-sentence-to-imr`, in case the chatbot should offer
-     the same endpoint for one-shot use; what is written to MongoDB.
-   - OSM query API: what `/validate-spot-query` checks, compared with our `/validate`.
-   - Deployment: `docker-compose.yml`, `ENVIRONMENT.md` and `SECURITY.md` of the main
-     repository; where the frontend runs (its `.env.example` mentions Vercel).
-   - Result: a short integration note in `API.md` and corrections to the handover list
-     below; code changes only where they are small (e.g. the error field).
+   Open points:
+   - How long a turn really takes has not been measured against the 60 seconds. The log line
+     has `seconds=`; look at it during the next benchmark run before choosing the limit.
+   - A property name the tag search has nothing for fails the frontend's conversion after
+     `/chat` has answered. How often that happens is unknown; our property table and the tag
+     search can differ. Worth counting in package 3 (run the gold queries through the lookup).
+   - The frontend copies `spot_colours.csv` into its own code (`spotColours.ts`), so colour
+     changes have to be made in two places.
 
 ## What to test
 
@@ -361,49 +509,55 @@ which is the opposite of what was asked, and the bot has to say so.
 Collected on 2026-10-12 after package 4. Details are in the packages above; this is the list
 to go through with whoever takes over.
 
-### Next: package 5
-
-0. **Read the existing SPOT repositories**, the frontend first (package 5 above). Do this
-   before the points below; it settles point 4 and affects 8 to 16.
-
 ### Before package 3 starts
 
-1. **Check whether the LLM endpoint caches answers.** Repeated identical requests came back
-   in 0.1 to 0.8 s and `--repeat 3` gave 30 of 30 identical cases. If it caches, `--repeat`
-   and every before/after comparison of a prompt change understate the variation. Find out
-   how to switch the cache off for test runs, then redo the B baseline with `--repeat 3`.
-2. **Re-run the official benchmark.** The `chat-02` scores predate packages 1 and 4 (longer
-   prompt, two more tools, markup and length checks on query values). Package 3 compares
-   against the new run, not against `chat-02`.
-3. **Push the work.** Packages 1, 2 and 4 are committed together on `master` (their changes
-   overlap in the same files), but the repository has no remote yet.
+1. **Check whether the LLM endpoint caches answers.** DONE in package 3: it does. Run tests
+   with `--no-cache`. `--repeat` now measures real variation; the package 2 and package 4
+   baselines were taken with the cache on, so use the uncached numbers of package 3.
+2. **Re-run the official benchmark.** DONE in package 3: `chat-03`, 69.4% perfect match.
+3. **Push the work.** Still open. Packages 1, 2 and 4 are committed together on `master`
+   (their changes overlap in the same files); packages 3 and 5 are in the working tree, not
+   committed. The repository has no remote yet.
 
 ### Decisions still to make
 
-4. **Who calls the API in production?** (Probably answered by package 5: the existing
-   frontend forwards every backend call from its own server, behind a login.) If the browser calls it directly, `SPOT_API_KEY`
-   protects nothing (every visitor can read it) and CORS plus the rate limit are the only
-   gates. If the frontend's own backend calls it, the key is real protection, and the rate
-   limit needs the forwarded client address (`--forwarded-allow-ips`), otherwise all users
-   share one limit. Both defaults are open until this is decided.
+4. **Who calls the API in production?** ANSWERED by package 5: the frontend's server, for
+   signed-in users, with `X-API-Key`. Set `SPOT_API_KEY`; CORS can be closed; the rate limit
+   counts per `X-Spot-User` once the frontend sends it.
 5. **History signing: recommended not to build.** A forged assistant turn cannot be told
    from a real one, and the forged robbery agreement was answered in one run. But the attacker
    gains little: the same search is available by leaving the harmful purpose out, and the
    query only goes back to them. Decision 3 already accepts that a client can drop the lock.
    Revisit only if the lock has to be tamper-proof.
 6. **Privacy notice.** Messages, history and query go to the LLM provider, object names to
-   the tag search. The text for the public site and the provider's retention terms are open.
+   the tag search. The site's statement (`src/lib/const/strings/info.ts` in the frontend)
+   covers logging of the search query and output, but names no language model provider among
+   the third parties. The added text and the provider's retention terms are open.
 7. **Fixed replies are English only** (refusals, the self-harm message, limit explanations).
    Decide whether the public version needs other languages.
+7a. **Store chat turns for labelling?** The NLP API stores every sentence with its result per
+   pseudonymous user (`nlpRequests`); chat turns only reach the platform log and Matomo. Our
+   log has no message text on purpose. If real conversations are to be labelled, someone has
+   to store them: the frontend route (it has MongoDB and the user name) is the natural place.
+7b. **Markdown in replies.** The frontend renders replies as Markdown; package 4 said plain
+   text. `API.md` now allows Markdown with links and images switched off. Confirm, or ask
+   for plain text.
+7c. **Where the repository lives.** The frontend branch links `dw-innovation/kid2-spot-chat`,
+   which does not exist; this repository has no remote (point 3).
 
 ### To tell the frontend developer
+
+The branch `feat/spot-chat-api` exists (package 5), and newer code than the pushed build too.
+Go through the numbered list "What the older chat branch lacked" in `API.md` against the
+current frontend code; the points below are the general rules behind it.
 
 8. `tool_calls` is always `[]` and `/docs` is gone unless the server runs with `SPOT_DEBUG=1`.
    This is a breaking change if either is used.
 9. Render `reply` and `limitations[].detail` as plain text, never as HTML, and do not turn
    URLs in `reply` into links. The only link to render is `refusal.url`.
-10. New status codes: 411, 413, 422, 429 (with `Retry-After`) and a 502 whose `detail` is a
-    fixed sentence. On 429 and 502, keep the user's message in the input field.
+10. New status codes: 411, 413, 422, 429 (with `Retry-After`), 502 and 504. Every error body
+    has `message` (one string, safe to show) next to `detail`. On 429, 502 and 504, keep the
+    user's message in the input field.
 11. Limits: message 2,000 characters, 200 history messages, 256 kB per request; `history`
     takes `user` and `assistant` turns only; `model` must be one of `LLM_MODELS`.
 12. Send `history` back unchanged (the lock travels in it). Very long chats may drop the
@@ -411,7 +565,9 @@ to go through with whoever takes over.
 
 ### To do when deploying
 
-13. Set `SPOT_CORS_ORIGINS` to the frontend's origin; leave `SPOT_DEBUG` unset.
+13. Set `SPOT_API_KEY` (the frontend's `SPOT_CHAT_API_KEY`), `LLM_TURN_TIMEOUT=50` and
+    `SPOT_CORS_ORIGINS` to anything but `*`; leave `SPOT_DEBUG` unset. Add the service to
+    the compose file of `dw-innovation/SPOT`, next to the other three.
 14. Reverse proxy for TLS and a second, global rate limit; the built-in one counts per
     worker process and in memory.
 15. A spending limit on the LLM account.
@@ -432,7 +588,8 @@ to go through with whoever takes over.
     are over-reported ("women's", "tall", "near me"); "the corner of X and Y" becomes 250 m
     instead of 50 m.
 21. The prompt-leak guard catches word-for-word copies only, not a summary or translation.
-22. Gold review: the typo "baskeball court" in a gold entity name.
+22. Gold review: see "Gold and metric findings" in package 3. Two of them need a decision
+    (minimum distance and "either ... or" are limits here and plain queries in the gold).
 
 ### Practical
 
@@ -444,3 +601,6 @@ to go through with whoever takes over.
     run with `uv run --no-project --python 3.13 --with pytest --with httpx
     --with-requirements requirements.txt --with-requirements requirements-api.txt python -m pytest -q`.
     Adding pytest and httpx to a requirements file would remove the need for this.
+26. The official benchmark runs in the conda env `spot` on the development machine
+    (`python -m benchmarking.evaluate_results` from the data-generation repository), with the
+    key table `benchmarking/data/SPOT_OSM-tag-bundles-UPDATED-workInProgress.xlsx`.

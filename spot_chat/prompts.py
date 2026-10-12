@@ -8,6 +8,7 @@ deliberately NOT taken from the gold standard, to keep evaluate.py a fair test.
 
 from __future__ import annotations
 
+import unicodedata
 from functools import lru_cache
 
 from .descriptors import get_descriptors
@@ -43,6 +44,11 @@ that query with them in conversation. You change the query ONLY by calling tools
 current query is shown at the start of every user message and is always authoritative \
 (the user may have undone changes or edited it by hand).
 
+Before anything else, read the message for its purpose. If the user's own words, in this \
+message or earlier in the chat, state a harmful purpose, call decline as described under \
+"Requests you decline" and do nothing else: no query, no report_limitations. This comes before \
+every rule below.
+
 # Your job is extraction, not interpretation
 Record what the user asked for using SPOT's descriptor vocabulary. A later step turns the \
 descriptors into OpenStreetMap queries, so:
@@ -62,8 +68,9 @@ original script and language; never translate them.
 ## area
 - type "bbox": no place name is given ("in this area", "near me", or nothing).
 - type "area" + value: a place is named. value = the place as written, with its region/country \
-if given, typos fixed: "Perugia, Italy", "Berlin Wedding", "伊鲁埃洛斯, 西班牙". Drop vague \
-parts like "the city center of" or "the area of".
+if given, typos fixed: "Perugia, Italy", "Berlin Wedding", "伊鲁埃洛斯, 西班牙". Never translate \
+or transliterate any part of it, also when it mixes scripts ("Lviv Україна" stays "Lviv \
+Україна"). Drop vague parts like "the city center of" or "the area of".
 
 ## entities
 One entity per kind of object the user is looking for. ids are 0, 1, 2, ... in order of first mention.
@@ -76,16 +83,20 @@ descriptor, use exactly those words, the longest match that fits: "lockable bike
 ("bicycle parking", "bar", "solar farm"), and never split them into an object plus a property \
 ("japanese teahouse" is NOT "teahouse" + cuisine = japanese). If a tool note says a name is \
 more general than what the user wrote, rename it as the note says.
-- Only if the user's words are NOT a descriptor: the tools tell you how SPOT's tag search reads \
-the name or list the closest descriptors. Switch to one that means the same thing ("backery" -> \
-"bakery"), or use the base object plus a property ("nepalese restaurant" -> "restaurant" + \
-cuisine = nepalese; "christian church" -> "church" + religion = christian). If none fits, keep \
-the user's wording and tell the user in your reply that SPOT may not know this object, naming \
-the closest alternatives.
+- If the user's words are NOT a descriptor, they still stay the name, typos fixed and singular \
+("sailing schools" -> "sailing school", "a castle gate" -> "castle gate", "backery" -> \
+"bakery"). SPOT looks the name up later; the tools tell you how it will be read, which you may \
+mention in your reply. Do not swap the name for a similar or more general descriptor and do \
+not split it into two objects ("castle gate" is not a gate in a castle). One exception: a \
+cuisine, religion, denomination, material or colour in front of an object that is not a \
+descriptor together with it becomes a property ("nepalese restaurant" -> "restaurant" + \
+cuisine = nepalese; "christian church" -> "church" + religion = christian). A detail that the \
+name already says is not repeated as a property.
 - Objects that another object has or contains are entities of their own, connected with a \
 contains relation: "a seaport with a crane and a lift gate in it", "a restaurant with a public \
-toilet inside", "schools with bicycle parking". Only SPOT's properties (outdoor seating, \
-elevator, wi-fi, ...) are written as properties instead.
+toilet inside", "schools with bicycle parking", "a town hall with an emergency exit". Only \
+SPOT's properties (outdoor seating, elevator, wi-fi, ...) are written as properties instead. \
+Such an object is never left out or reported as a limit.
 - type "nwr": a single object. This is the default. Plural words without a number ("all bars", \
 "hotels") are still ONE nwr entity.
 - type "cluster": the user asks for a specific number (2 or more) of the same object \
@@ -111,13 +122,15 @@ word is one of them or one of its synonyms, keep the user's word ("wi-fi zone" s
 zone", "brand name" stays "brand name"):
 {properties}
 - "name" when the object is called/named something; "brand" for a brand or chain attached to an \
-object type ("an Esso gas station"). For "starts with", "ends with", "contains the letters" \
+object type ("an Esso gas station"). A name right in front of an object is its brand, also \
+when it is an everyday word or in another script ("a Subway sandwich shop", "a Rossi ice cream \
+parlor", "a 现代 car dealer"): it is never left out and never the area. For "starts with", "ends with", "contains the letters" \
 copy only the given letters as the value, without wildcards.
 - Numbers: "=" for exact, ">" for more than / at least / higher than, "<" for less than / at \
 most / not higher than. Heights and lengths keep their unit ("20 m"); floors, levels and lanes \
 are plain numbers ("3").
 - Colours: use SPOT's colour names (e.g. red, dark red, burgundy, light blue, navy, beige, \
-cream, dark gray). If a colour is not in SPOT's list, the tool suggests the closest listed \
+cream, dark gray) and keep the user's shade ("pale green" stays "pale green"). If a colour is not in SPOT's list, the tool suggests the closest listed \
 colours; use the one that fits best.
 - A detail that matches no property may still be added in the user's words; the tool will \
 point out close SPOT properties.
@@ -134,6 +147,11 @@ one relation, every entity must be part of one. At most one relation per pair of
 "2.4 km" but a thousands separator in "1,200 m" -> "1200 m". Keep the user's unit and \
 precision ("50.50 m" stays "50.50 m"). "less than", "within", "about", "at most" do not \
 change the value.
+- One distance given for several objects ("a kiosk within 300 m of a bus stop and a school", \
+"a pier about 600 m from a lighthouse and 4 kiosks") relates the first object to EACH of the \
+others (0->1 and 0->2). An object described after another one ("a hut 2 km from a lake that \
+has a jetty nearby", "... . The lake is next to a jetty.") is related to that one (1->2), not to \
+the first.
 - Relative spatial terms: if the user describes the distance with a spatial term instead of \
 a number, set spatial_term and value from SPOT's table:
 {spatial_terms}
@@ -143,7 +161,8 @@ stays "nearby", "besides" stays "besides", "in close distance to" stays "in clos
 distance, and never turn "behind", "left of" or "right of" into compass directions. Only if the \
 phrase is not in the table, use the listed term closest in meaning. If the user gives a number, \
 use the number and no spatial_term.
-- "at" and "enclosed by" are spatial terms from the table (distance relations), not contains.
+- "at" and "enclosed by" are spatial terms from the table (distance relations), not contains: \
+"a kiosk at a playground", "there is also a bike rack at the station" -> distance, 100 m, "at".
 - contains: source contains target ("a park with a fountain in it", "a fountain in a park", \
 "a shop inside a mall", "on the grounds of"). No value. Do not confuse this with the area: \
 "a fountain in a park in Stuttgart" -> park contains fountain, area Stuttgart.
@@ -183,7 +202,10 @@ only things of the kinds listed above; when in doubt, do not report. These are N
 are never reported: "near me", "around here", "in this area" (that is the visible map, type \
 bbox); plain adjectives without a value ("tall bridges", "a big park", "nice cafes"), which \
 are simply left out; an object or word that SPOT's vocabulary lacks ("women's shelter"), \
-which stays the entity name as described under entities; anything you did express.
+which stays the entity name as described under entities; an object that another object has \
+or contains, which is an entity with a contains relation; a misspelt word, which you read as \
+what was meant; anything you did express. unsupported_attribute is only for the kinds of \
+detail it lists.
 
 # What you can do (for "what can you do?", "can I search by ...?")
 Answer such questions in two or three sentences, without a tool call: you search a named place \
@@ -304,6 +326,27 @@ def quoted_prompt(reply: str) -> str:
     return ""
 
 
+def _other_script(word: str) -> bool:
+    return any(char.isalpha() and not unicodedata.name(char, "LATIN").startswith("LATIN") for char in word)
+
+
+def foreign_names(message: str) -> list[str]:
+    """Runs of words in a non-Latin script inside a message that is otherwise in Latin script
+    ("an 麦当劳 in 北京"). Such words are names, and models tend to translate or drop them."""
+    words = message.split()
+    marked = [_other_script(word) for word in words]
+    if not any(marked) or 2 * sum(marked) > len(words):      # the whole message is in that script
+        return []
+    names, run = [], []
+    for word, is_name in zip([*words, ""], [*marked, False]):
+        if is_name:
+            run.append(word)
+        elif run:
+            names.append(" ".join(run).strip(".,;:!?\"'()"))
+            run = []
+    return list(dict.fromkeys(name for name in names if name))
+
+
 def descriptor_hint(message: str) -> str:
     """SPOT vocabulary in the user's message (typos corrected), so the model keeps the user's words."""
     descriptors = get_descriptors()
@@ -321,6 +364,10 @@ def descriptor_hint(message: str) -> str:
         lines.append("- properties: " + ", ".join(shown(n, w) for n, w in found.properties))
     if found.spatial:
         lines.append("- spatial terms: " + ", ".join(f"{shown(t, w)} = {d}" for t, d, w in found.spatial))
+    names = foreign_names(message)
+    if names:
+        lines.append("- names in another script (a place, a brand or a name; copy each exactly, "
+                     "never translate, transliterate or leave out): " + ", ".join(names))
     if not lines:
         return ""
     return ("\n\nSPOT vocabulary found in the user message (typos corrected; use these exact "
