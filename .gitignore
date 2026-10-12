@@ -1,0 +1,6 @@
+.env
+.pytest_cache/
+__pycache__/
+evaluation_results.*
+goldstandard_testing_dataset.xlsx
+.idea/

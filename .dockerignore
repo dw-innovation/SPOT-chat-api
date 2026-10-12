@@ -1,0 +1,10 @@
+.git
+.env
+__pycache__/
+.pytest_cache/
+tests/
+*.xlsx
+!data/*.xlsx
+evaluation_results.*
+app.py
+README.md

@@ -1,0 +1,14 @@
+services:
+  spot-chat-api:
+    build: .
+    image: spot-chat-api:latest
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env          # LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, ... (see .env.example)
+    environment:
+      # Browsers calling this directly need the frontend's origin here:
+      SPOT_CORS_ORIGINS: "*"
+      # Set SPOT_API_KEY to require an X-API-Key header:
+      # SPOT_API_KEY: "choose-a-secret"
+    restart: unless-stopped
