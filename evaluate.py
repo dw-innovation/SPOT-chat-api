@@ -58,6 +58,7 @@ def run_sentence(client, settings, sentence: str, model: str | None, force_tool:
     after an API error or crash it waits and starts over; after a text-only answer (e.g. a
     question) it continues the chat and asks the model to build its best interpretation."""
     query, tools, errors, reply, reasons = empty_query(), [], 0, "", []
+    refusal, limitations = "", []
     conversation, message = [], sentence
     started = time.time()
     for attempt in range(1, retries + 2):
@@ -71,13 +72,15 @@ def run_sentence(client, settings, sentence: str, model: str | None, force_tool:
                     errors += not event.result.ok
                 elif isinstance(event, ReplyEvent):
                     turn_reply = event.text
+                    refusal = event.refusal.category if event.refusal else ""
+                    limitations += [item["category"] for item in event.limitations]
                 elif isinstance(event, ErrorEvent):
-                    turn_reply = f"ERROR: {event.text}"
+                    turn_reply = f"ERROR: {event.detail or event.text}"
         except Exception as exc:  # one broken sentence must not stop the run
             turn_reply = f"CRASH: {exc!r}"
         reply = turn_reply
-        if query["entities"] or attempt > retries:
-            break
+        if query["entities"] or attempt > retries or refusal:
+            break                                        # a declined sentence is not nudged
         if not turn_reply or turn_reply.startswith(("ERROR", "CRASH")):
             reasons.append("api error")
             time.sleep(min(30, 2 ** attempt))           # API trouble: wait, then start over
@@ -90,6 +93,7 @@ def run_sentence(client, settings, sentence: str, model: str | None, force_tool:
     return {
         "query": query, "tools": tools, "tool_errors": errors, "reply": reply,
         "attempts": attempt, "retry_reasons": ", ".join(reasons),
+        "refusal": refusal, "limitations": ", ".join(dict.fromkeys(limitations)),
         "seconds": round(time.time() - started, 1),
     }
 
@@ -168,6 +172,8 @@ def main() -> None:
             "reply": run["reply"],
             "asked_question": "?" in run["reply"] and not run["reply"].startswith(("ERROR", "CRASH")),
             "empty_result": not run["query"]["entities"],
+            "refusal": run["refusal"],
+            "limitations": run["limitations"],
             "attempts": run["attempts"],
             "retry_reasons": run["retry_reasons"],
             "seconds": run["seconds"],
@@ -185,6 +191,8 @@ def main() -> None:
           f"(api error: {int(out['retry_reasons'].str.contains('api error').sum())}, "
           f"text reply: {int(out['retry_reasons'].str.contains('text reply').sum())})")
     print(f"  {'no YAML produced':<22} {int(out['empty_result'].sum())} (after all retries)")
+    print(f"  {'declined':<22} {int((out['refusal'] != '').sum())} (over-blocking: gold sentences are all harmless)")
+    print(f"  {'reported a limit':<22} {int((out['limitations'] != '').sum())}")
     print(f"  {'avg seconds':<22} {out['seconds'].mean():.1f}")
 
     with open(args.jsonl, "w", encoding="utf-8") as handle:

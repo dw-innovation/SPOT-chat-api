@@ -4,3 +4,5 @@ __pycache__/
 evaluation_results.*
 goldstandard_testing_dataset.xlsx
 .idea/
+testset_results.*
+testset_gold.xlsx

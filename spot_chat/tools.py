@@ -31,6 +31,7 @@ from .query import (
     warnings_for,
 )
 from .descriptors import notes_for
+from .policy import LIMITS, REFUSAL_CATEGORIES, Refusal, code_limits, limitation, refusal_for
 from .schema import OPERATORS, UNITS
 
 # --------------------------------------------------------------------------- #
@@ -198,7 +199,13 @@ def new_query(query, area, entities, relations=None):
     fresh = build_query(area, entities, relations)
     query.clear()
     query.update(fresh)
-    return f"Started a new query with {len(fresh['entities'])} entities and {len(fresh['relations'])} relations."
+    # Say so when a cluster got its distance from the tool, or the model tries to "fix" it.
+    defaulted = [f"cluster {e['id']} ({e['name']}) got maxDistance {e['maxDistance']}"
+                 for raw, e in zip(entities, fresh["entities"])
+                 if e["type"] == "cluster" and not (isinstance(raw, dict) and raw.get("maxDistance"))]
+    note = f" Note: {'; '.join(defaulted)}, as intended when the user gives none." if defaulted else ""
+    return (f"Started a new query with {len(fresh['entities'])} entities and "
+            f"{len(fresh['relations'])} relations.{note}")
 
 
 @tool(
@@ -397,6 +404,68 @@ def remove_relations(query, relations):
 
 
 # --------------------------------------------------------------------------- #
+# Tools that do not edit the query: declining, and reporting what was left out
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class Outcome:
+    """What a tool returns when it has more to say than a message."""
+    message: str
+    refusal: Refusal | None = None
+    limitations: list[dict] = field(default_factory=list)
+
+
+@tool(
+    "Decline the user's message instead of building or editing the query. Call it alone, "
+    "without any other tool. The chat ends the turn with a fixed reply.",
+    {
+        "category": {"type": "string", "enum": list(REFUSAL_CATEGORIES)},
+        "reply": {
+            "type": "string",
+            "description": "Only for 'off_topic': one short sentence in the user's language saying "
+                           "that you only build map searches. Ignored for all other categories.",
+        },
+    },
+    required=["category"],
+)
+def decline(query, category, reply=None):
+    try:
+        refusal = refusal_for(category, reply)
+    except ValueError as exc:
+        raise QueryError(str(exc)) from None
+    return Outcome(f"Declined ({refusal.category}).", refusal=refusal)
+
+
+@tool(
+    "Record the parts of the user's request that the query cannot express and that you left "
+    "out or approximated. Call it in the same reply as the tools that build the rest.",
+    {"items": {
+        "type": "array", "minItems": 1,
+        "items": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "enum": list(LIMITS)},
+                "detail": {
+                    "type": "string",
+                    "description": "The user's words for that part, e.g. 'at least 500 m from', "
+                                   "'open after 10 pm', 'the nearest'.",
+                },
+            },
+            "required": ["category", "detail"],
+            "additionalProperties": False,
+        },
+    }},
+)
+def report_limitations(query, items):
+    try:
+        found = [limitation(item.get("category"), item.get("detail")) for item in items]
+    except ValueError as exc:
+        raise QueryError(str(exc)) from None
+    told = "; ".join(f"\"{item['detail']}\": {item['message']}" for item in found)
+    return Outcome(f"Recorded. Tell the user in your reply: {told}", limitations=found)
+
+
+# --------------------------------------------------------------------------- #
 # Execution
 # --------------------------------------------------------------------------- #
 
@@ -408,12 +477,17 @@ class ToolResult:
     message: str
     warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)    # unknown descriptors, with suggestions
+    refusal: Refusal | None = None                    # set by a successful decline
+    limitations: list[dict] = field(default_factory=list)   # parts the query cannot express
 
     def for_model(self, query: dict) -> str:
         """Tool message sent back to the LLM: outcome, warnings, notes and the current query."""
         lines = [("OK: " if self.ok else "ERROR (nothing was changed): ") + self.message]
         lines += [f"Warning: {w}" for w in self.warnings]
         lines += [f"Note: {n}" for n in self.notes]
+        if self.name != "report_limitations":           # its message already says this
+            lines += [f"Limit: \"{item['detail'] or item['category']}\": {item['message']} "
+                      "Tell the user." for item in self.limitations]
         lines += ["", "Current query:", to_yaml(query).rstrip()]
         return "\n".join(lines)
 
@@ -460,13 +534,16 @@ def execute_tool(query: dict, name: str, raw_arguments, message: str | None = No
 
     working = copy.deepcopy(query)
     try:
-        result_message = selected.fn(working, **arguments)
+        outcome = selected.fn(working, **arguments)
     except QueryError as exc:
         return query, ToolResult(name, arguments, False, str(exc))
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         return query, ToolResult(name, arguments, False, f"could not apply {name}: {exc!r}")
-    return working, ToolResult(name, arguments, True, result_message, warnings_for(working),
-                               new_notes(query, working, message))
+    if not isinstance(outcome, Outcome):
+        outcome = Outcome(outcome)
+    return working, ToolResult(name, arguments, True, outcome.message, warnings_for(working),
+                               new_notes(query, working, message), outcome.refusal,
+                               outcome.limitations + code_limits(query, working))
 
 
 def new_notes(before: dict, after: dict, message: str | None = None) -> list[str]:

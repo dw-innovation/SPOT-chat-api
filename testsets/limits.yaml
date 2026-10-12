@@ -1,0 +1,354 @@
+# Section D of docs/ROADMAP.md: requests the query format cannot express.
+# The bot builds the supported part and reports the rest. `query` is the gold for the
+# supported part where the conventions leave no doubt, otherwise `any`. The `not_a_limit`
+# group measures over-reporting: nothing may be reported there.
+section: D
+title: Unsupported requests
+cases:
+
+# --- Direction (recorded by the tools when the spatial term is used) --------------------------
+
+- id: direction-compass
+  group: direction
+  message: a pharmacy west of a church in Graz
+  expect:
+    limitations: [direction]
+    query:
+      area: {type: area, value: Graz}
+      entities: [{id: 0, name: pharmacy, type: nwr}, {id: 1, name: church, type: nwr}]
+      relations: [{source: 0, target: 1, type: distance, value: 1500 m}]
+- id: direction-behind
+  group: direction
+  message: a bench behind a chapel in Tartu
+  expect:
+    limitations: [direction]
+    query:
+      area: {type: area, value: Tartu}
+      entities: [{id: 0, name: bench, type: nwr}, {id: 1, name: chapel, type: nwr}]
+      relations: [{source: 0, target: 1, type: distance, value: 100 m}]
+- id: direction-in-front
+  group: direction
+  message: a kiosk in front of a train station in Bonn
+  expect:
+    limitations: [direction]
+    query:
+      area: {type: area, value: Bonn}
+      entities: [{id: 0, name: kiosk, type: nwr}, {id: 1, name: train station, type: nwr}]
+      relations: [{source: 0, target: 1, type: distance, value: 100 m}]
+- id: direction-left
+  group: direction
+  message: a bakery to the left of a bank
+  expect:
+    limitations: [direction]
+    query:
+      area: {type: bbox}
+      entities: [{id: 0, name: bakery, type: nwr}, {id: 1, name: bank, type: nwr}]
+      relations: [{source: 0, target: 1, type: distance, value: 100 m}]
+
+# --- Position relative to the area ------------------------------------------------------------
+
+- id: area-outskirts
+  group: area_position
+  message: supermarkets on the outskirts of Lyon
+  expect:
+    limitations: [area_position]
+    query:
+      area: {type: area, value: Lyon}
+      entities: [{id: 0, name: supermarket, type: nwr}]
+- id: area-north
+  group: area_position
+  message: hotels in the north of Hamburg
+  expect:
+    limitations: [area_position]
+    query:
+      area: {type: area, value: Hamburg}
+      entities: [{id: 0, name: hotel, type: nwr}]
+- id: area-west-of
+  group: area_position
+  message: campsites just west of Berlin
+  expect:
+    limitations: [area_position]
+    limitations_allowed: [direction]
+    query:
+      area: {type: area, value: Berlin}
+      entities: [{id: 0, name: campsite, type: nwr}]
+
+# --- Arrangements that are not "within" or "contains" -----------------------------------------
+
+- id: arrangement-intersection
+  group: arrangement
+  message: the corner of Hauptstraße and Bahnhofstraße in Freiburg
+  expect:
+    limitations: [arrangement]
+    query:
+      area: {type: area, value: Freiburg}
+      entities:
+        - {id: 0, name: street, type: nwr, properties: [{name: name, operator: "~", value: Hauptstraße}]}
+        - {id: 1, name: street, type: nwr, properties: [{name: name, operator: "~", value: Bahnhofstraße}]}
+      relations: [{source: 0, target: 1, type: distance, value: 50 m}]
+- id: arrangement-same-street
+  group: arrangement
+  message: a cafe and a book shop on the same street in Ghent
+  expect: {query: any, limitations: [arrangement]}
+- id: arrangement-between
+  group: arrangement
+  message: a fountain between a church and a museum in Siena
+  expect: {query: any, limitations: [arrangement]}
+- id: arrangement-facing
+  group: arrangement
+  message: a hotel facing a lake in Como
+  expect: {query: any, limitations: [arrangement]}
+
+# --- Shapes and visual impressions ------------------------------------------------------------
+
+- id: appearance-futuristic
+  group: appearance
+  message: a round building that looks futuristic in Rotterdam
+  expect: {query: any, limitations: [appearance]}
+- id: appearance-no-object
+  group: appearance
+  message: something star-shaped with a red dot in the middle
+  expect: {query: empty, limitations: [appearance], reply_matches: "\\?"}
+- id: appearance-l-shaped
+  group: appearance
+  message: an L-shaped school in Leeds
+  expect:
+    limitations: [appearance]
+    query:
+      area: {type: area, value: Leeds}
+      entities: [{id: 0, name: school, type: nwr}]
+
+# --- Minimum distance and absence -------------------------------------------------------------
+
+- id: min-distance-from
+  group: min_distance
+  message: a campsite at least 2 km from a motorway in Tyrol
+  expect: {query: any, limitations: [min_distance]}
+- id: min-distance-absent
+  group: min_distance
+  message: a hotel with no nightclub nearby in Ibiza
+  expect:
+    limitations: [min_distance]
+    query:
+      area: {type: area, value: Ibiza}
+      entities: [{id: 0, name: hotel, type: nwr}]
+- id: min-distance-not-near
+  group: min_distance
+  message: a playground that is not near a motorway in Utrecht
+  expect:
+    limitations: [min_distance]
+    query:
+      area: {type: area, value: Utrecht}
+      entities: [{id: 0, name: playground, type: nwr}]
+- id: min-distance-cluster
+  group: min_distance
+  message: 8 flower shops in Cologne that are at least 50 meters apart
+  expect:
+    limitations: [min_distance]
+    query:
+      area: {type: area, value: Cologne}
+      entities: [{id: 0, name: flower shop, type: cluster, minPoints: 8, maxDistance: 50 m}]
+- id: min-distance-remote
+  group: min_distance
+  message: a cabin more than 5 km away from any village in Lapland
+  expect: {query: any, limitations: [min_distance]}
+
+# --- Alternatives -----------------------------------------------------------------------------
+
+- id: alternatives-or
+  group: alternatives
+  message: a bakery or a supermarket near a tram stop in Basel
+  expect:
+    limitations: [alternatives]
+    query:
+      area: {type: area, value: Basel}
+      entities: [{id: 0, name: bakery, type: nwr}, {id: 1, name: tram stop, type: nwr}]
+      relations: [{source: 0, target: 1, type: distance, value: 250 m}]
+- id: alternatives-either
+  group: alternatives
+  message: either a hostel or a campsite in Split
+  expect:
+    limitations: [alternatives]
+    query:
+      area: {type: area, value: Split}
+      entities: [{id: 0, name: hostel, type: nwr}]
+
+# --- Superlatives and counts ------------------------------------------------------------------
+
+- id: superlative-nearest
+  group: superlative
+  message: the pharmacy that is nearest to the train station in Bologna
+  expect: {query: any, limitations: [superlative]}
+- id: superlative-biggest
+  group: superlative
+  message: the biggest park in Madrid
+  expect:
+    limitations: [superlative]
+    query:
+      area: {type: area, value: Madrid}
+      entities: [{id: 0, name: park, type: nwr}]
+- id: superlative-tallest
+  group: superlative
+  message: the tallest tower in Tallinn
+  expect:
+    limitations: [superlative]
+    query:
+      area: {type: area, value: Tallinn}
+      entities: [{id: 0, name: tower, type: nwr}]
+- id: superlative-most
+  group: superlative
+  message: the street with the most bars in Dublin
+  expect: {query: any, limitations: [superlative]}
+
+# --- Attributes outside the format ------------------------------------------------------------
+
+- id: attribute-hours
+  group: unsupported_attribute
+  message: restaurants in Lisbon that are still open after 11 pm
+  expect:
+    limitations: [unsupported_attribute]
+    query:
+      area: {type: area, value: Lisbon}
+      entities: [{id: 0, name: restaurant, type: nwr}]
+- id: attribute-price
+  group: unsupported_attribute
+  message: a cheap hotel near the train station in Prague
+  expect:
+    limitations: [unsupported_attribute]
+    query:
+      area: {type: area, value: Prague}
+      entities: [{id: 0, name: hotel, type: nwr}, {id: 1, name: train station, type: nwr}]
+      relations: [{source: 0, target: 1, type: distance, value: 250 m}]
+- id: attribute-rating
+  group: unsupported_attribute
+  message: sushi restaurants in Vienna with good reviews
+  expect:
+    limitations: [unsupported_attribute]
+    query:
+      area: {type: area, value: Vienna}
+      entities: [{id: 0, name: sushi restaurant, type: nwr}]
+- id: attribute-travel-time
+  group: unsupported_attribute
+  message: a supermarket 10 minutes on foot from a subway station in Lyon
+  expect: {query: any, limitations: [unsupported_attribute]}
+- id: attribute-view
+  group: unsupported_attribute
+  message: a hotel with a sea view in Nice
+  expect:
+    limitations: [unsupported_attribute]
+    query:
+      area: {type: area, value: Nice}
+      entities: [{id: 0, name: hotel, type: nwr}]
+
+# --- More than the format holds ---------------------------------------------------------------
+
+- id: too-many-objects
+  group: too_many
+  message: a bakery, a butcher, a pharmacy, a florist and a bank in Graz
+  expect: {query: any, limitations: [too_many]}
+- id: too-many-properties
+  group: too_many
+  message: a red brick church with a copper roof, more than 30 m high and called St. Mary, in Leeds
+  expect: {query: any, limitations: [too_many]}
+
+# --- Capability questions: answered without a tool --------------------------------------------
+
+- id: capability-hours
+  group: capability_question
+  message: Can I search by opening hours?
+  expect: {query: unchanged, max_tool_calls: 0, reply_matches: "\\b(no|not|cannot)\\b|n['’]t\\b"}
+- id: capability-nearest
+  group: capability_question
+  message: Are you able to rank results, for example by size?
+  expect: {query: unchanged, max_tool_calls: 0, reply_matches: "\\b(no|not|cannot)\\b|n['’]t\\b"}
+- id: capability-direction
+  group: capability_question
+  message: Can I look for something north of something else?
+  expect: {query: unchanged, max_tool_calls: 0}
+- id: capability-height
+  group: capability_question
+  message: Could I filter towers by how high they are?
+  expect: {query: unchanged, max_tool_calls: 0, limitations: []}
+
+# --- Not a limit: nothing may be reported -----------------------------------------------------
+
+- id: not-a-limit-near-me
+  group: not_a_limit
+  message: cafes near me
+  expect:
+    limitations: []
+    query:
+      area: {type: bbox}
+      entities: [{id: 0, name: cafe, type: nwr}]
+- id: not-a-limit-around-here
+  group: not_a_limit
+  message: nice cafes around here
+  expect:
+    limitations: []
+    query:
+      area: {type: bbox}
+      entities: [{id: 0, name: cafe, type: nwr}]
+- id: not-a-limit-adjective
+  group: not_a_limit
+  message: a big park in Madrid
+  expect:
+    limitations: []
+    query:
+      area: {type: area, value: Madrid}
+      entities: [{id: 0, name: park, type: nwr}]
+- id: not-a-limit-tall
+  group: not_a_limit
+  message: a tall tower in Tallinn
+  expect:
+    limitations: []
+    query:
+      area: {type: area, value: Tallinn}
+      entities: [{id: 0, name: tower, type: nwr}]
+- id: not-a-limit-unknown-object
+  group: not_a_limit
+  message: a women's shelter in Leeds
+  expect: {query: any, limitations: []}
+- id: not-a-limit-within
+  group: not_a_limit
+  message: a pharmacy within 500 m of a hospital in Kassel
+  expect:
+    limitations: []
+    query:
+      area: {type: area, value: Kassel}
+      entities: [{id: 0, name: pharmacy, type: nwr}, {id: 1, name: hospital, type: nwr}]
+      relations: [{source: 0, target: 1, type: distance, value: 500 m}]
+- id: not-a-limit-at-most
+  group: not_a_limit
+  message: two benches at most 20 m apart in Bonn
+  expect:
+    limitations: []
+    query:
+      area: {type: area, value: Bonn}
+      entities: [{id: 0, name: bench, type: cluster, minPoints: 2, maxDistance: 20 m}]
+- id: not-a-limit-height
+  group: not_a_limit
+  message: a tower at least 30 m high in Tallinn
+  expect:
+    limitations: []
+    query:
+      area: {type: area, value: Tallinn}
+      entities:
+        - {id: 0, name: tower, type: nwr, properties: [{name: height, operator: ">", value: 30 m}]}
+- id: not-a-limit-at
+  group: not_a_limit
+  message: a hotel at a lake in Como
+  expect:
+    limitations: []
+    query:
+      area: {type: area, value: Como}
+      entities: [{id: 0, name: hotel, type: nwr}, {id: 1, name: lake, type: nwr}]
+      relations: [{source: 0, target: 1, type: distance, value: 100 m}]
+- id: not-a-limit-contains
+  group: not_a_limit
+  message: a fountain inside a park in Mainz
+  expect:
+    limitations: []
+    query:
+      area: {type: area, value: Mainz}
+      entities: [{id: 0, name: fountain, type: nwr}, {id: 1, name: park, type: nwr}]
+      relations: [{source: 1, target: 0, type: contains}]

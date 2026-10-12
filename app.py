@@ -39,7 +39,7 @@ EXAMPLES = [
     "Find me an indoor climbing wall that is higher than 3 meters, within 300 meters from a bus station in Groningen.",
     "Please search for a McDonalds in Hidalgo, Mexico.",
     "find me a park with a fountain in stuttgart close to a thalia",
-    "Looking for 8 flower shops in Cologne that are at least 50 meters apart",
+    "Looking for 8 flower shops in Cologne within 500 meters of each other",
 ]
 
 PLACEHOLDER = """**Describe a place you are looking for.**
@@ -91,16 +91,19 @@ def respond(message, chat, conversation, query, undo_stack, model):
                 chat = chat + [tool_message(event)]
             elif isinstance(event, ReplyEvent):
                 chat = chat + [{"role": "assistant", "content": event.text}]
+                # The refusal marker keeps the chat closed after a harmful request ("Start over" resets).
+                marker = {"refusal": event.refusal.category} if event.refusal else {}
                 conversation = conversation + [
                     {"role": "user", "content": message},
-                    {"role": "assistant", "content": event.text},
+                    {"role": "assistant", "content": event.text, **marker},
                 ]
             elif isinstance(event, ErrorEvent):
+                print(f"LLM error: {event.detail}")
                 chat = chat + [note(event.text)]
             yield gr.skip(), chat, to_yaml(query), conversation, query, gr.skip()
     except Exception as exc:  # keep the demo alive and show what went wrong
         traceback.print_exc()
-        chat = chat + [note(f"Something went wrong: {exc}")]
+        chat = chat + [note("Something went wrong. Please try again.")]
         yield gr.skip(), chat, to_yaml(query), conversation, query, gr.skip()
 
     if query != before:

@@ -7,6 +7,7 @@ normalised data or raise `QueryError` with a message the LLM can act on.
 from __future__ import annotations
 
 import copy
+import re
 
 import yaml
 
@@ -39,6 +40,21 @@ def _distance(raw, what: str) -> str:
         raise QueryError(f"{what}: {exc}") from None
 
 
+MAX_TEXT_CHARS = 120      # longest place name, object name or property value
+_MARKUP_RE = re.compile(r"<\s*[A-Za-z/!?]|&#|[\x00-\x1f\x7f]")
+
+
+def _text(raw, what: str) -> str:
+    """A name or value as plain text. The frontend renders these, and they come from the
+    user's message or from a query the client sent, so markup is refused, not cleaned up."""
+    text = clean_text(raw)
+    if _MARKUP_RE.search(text):
+        raise QueryError(f"{what} must be plain text without HTML or other markup; leave that part out")
+    if len(text) > MAX_TEXT_CHARS:
+        raise QueryError(f"{what} is too long (at most {MAX_TEXT_CHARS} characters)")
+    return text
+
+
 def empty_query() -> dict:
     return {"area": {"type": "bbox"}, "entities": [], "relations": []}
 
@@ -55,7 +71,7 @@ def normalize_area(raw) -> dict:
     if not isinstance(raw, dict):
         raise QueryError("area must be an object like {type: 'area', value: 'Cologne'}")
     area_type = str(raw.get("type") or "").strip().lower()
-    value = clean_text(raw.get("value") or "")
+    value = _text(raw.get("value") or "", "the area value")
     if area_type not in ("", "bbox", "area"):
         raise QueryError(f"unknown area type '{area_type}'; use 'bbox' or 'area'")
     if value:                                   # a place name always wins over 'bbox'
@@ -75,7 +91,7 @@ def normalize_property(raw) -> dict:
     if not isinstance(raw, dict) or not raw.get("name"):
         raise QueryError("every property needs a name, e.g. {name: 'outdoor seating'}")
 
-    name = clean_text(raw["name"])
+    name = _text(raw["name"], "a property name")
     key = name.lower()
     if "=" in name or ":" in name or key in FORBIDDEN_PROPERTY_NAMES:
         raise QueryError(
@@ -89,7 +105,7 @@ def normalize_property(raw) -> dict:
         )
 
     value = raw.get("value")
-    value = None if value is None or str(value).strip() == "" else clean_text(value)
+    value = None if value is None or str(value).strip() == "" else _text(value, f"the value of '{name}'")
     operator = raw.get("operator")
     operator = None if operator in (None, "") else str(operator).strip().lower()
     operator = OPERATOR_ALIASES.get(operator, operator)
@@ -156,7 +172,7 @@ def merge_properties(existing: list[dict], new: list[dict]) -> list[dict]:
 def normalize_entity(raw, entity_id: int) -> dict:
     if not isinstance(raw, dict):
         raise QueryError("each entity must be an object with at least a name")
-    name = clean_text(raw.get("name") or "")
+    name = _text(raw.get("name") or "", "an entity name")
     if not name:
         raise QueryError("every entity needs a name, e.g. 'restaurant'")
     if "=" in name or (":" in name and not name.lower().startswith("brand:")):

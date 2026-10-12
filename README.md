@@ -34,7 +34,8 @@ kid2-spot-chat/
 ├── app.py                  # Gradio demo UI (Hugging Face Space)
 ├── spot_chat/
 │   ├── agent.py            # chat loop: LLM → tool calls → reply
-│   ├── tools.py            # the 11 tools the model may call
+│   ├── tools.py            # the 13 tools the model may call
+│   ├── policy.py           # what is declined, and what the query cannot express
 │   ├── query.py            # validation & normalisation of the query
 │   ├── descriptors.py      # SPOT tag bundles: lookup, message scan, suggestions
 │   ├── tag_search.py       # client for the SPOT tag search API
@@ -43,6 +44,8 @@ kid2-spot-chat/
 │   └── compare.py          # scoring against the gold standard
 ├── data/                   # tag bundles + colour table
 ├── evaluate.py             # benchmark runner
+├── testsets/               # behaviour test sets: refusals, injection, multi-turn, limits
+├── run_testsets.py         # runs the test sets against the model
 ├── Dockerfile / docker-compose.yml
 └── API.md                  # request/response reference for frontend devs
 ```
@@ -60,7 +63,7 @@ cp .env.example .env        # fill in LLM_API_KEY and LLM_BASE_URL
 docker compose up --build   # http://localhost:8000
 ```
 
-Interactive API docs: `http://localhost:8000/docs`
+Interactive API docs: `http://localhost:8000/docs` (start with `SPOT_DEBUG=1`)
 
 ### Locally
 
@@ -112,6 +115,12 @@ Copy `.env.example` to `.env` and fill it in.
 |----------|-------------|
 | `SPOT_API_KEY` | If set, every request needs the header `X-API-Key: <value>`. |
 | `SPOT_CORS_ORIGINS` | Comma-separated origins for browser calls (default `*`). |
+| `SPOT_RATE_LIMIT` | `/chat` calls per minute and client address (default `30`, `0` = off). |
+| `SPOT_DEBUG` | `1` enables `/docs`, fills `tool_calls` and makes `/health` detailed. Leave unset in production. |
+
+Requests are capped (message 2,000 characters, 200 history messages, 256 kB), `history` takes
+only `user` and `assistant` turns, and `model` must be one of `LLM_MODELS`. See "Going public"
+in [API.md](./API.md) for what a public deployment has to add.
 
 ---
 
@@ -149,14 +158,21 @@ restarts and multiple instances lose nothing — and users can edit the query in
   "query_yaml": "area:\n  type: area\n  value: Cologne\n…",
   "changed": true,     // false if the turn changed nothing (e.g. the user asked a question)
   "history": [ … ],    // send this back with the next message
-  "tool_calls": [      // what the model did — useful for a debug view
+  "tool_calls": [      // what the model did — only with SPOT_DEBUG=1, otherwise []
     {"name": "new_query", "ok": true, "message": "Started a new query with 2 entities and 1 relations.",
      "arguments": { … }, "warnings": [], "notes": []}
-  ]
+  ],
+  "refusal": null,     // set when the message was declined: {"category", "locked", "url"}
+  "limitations": []    // parts of the request the query cannot express
 }
 ```
 
 Show `reply` in the chat, draw the map from `query`, and redraw when `changed` is `true`.
+
+The assistant declines messages that are not about map search, and searches with a stated
+harmful purpose. After a harmful request the chat stays closed until it is reset (`history: []`);
+the server enforces this through a marker in the `history` it returns, so send `history` back
+unchanged. See **[API.md](./API.md)** for what to render in each case.
 
 ```js
 const res = await fetch(`${CHAT_API}/chat`, {
@@ -177,16 +193,18 @@ model (`"400 meters"` → `"400 m"`, entity ids renumbered). Returns
 
 ### `GET /health`
 
-`{"status": "ok", "model": …, "descriptors_loaded": 8606, …}` — contains no secrets.
+`{"status": "ok"}`; with `SPOT_DEBUG=1` also the model and what is loaded.
 
 ### Status codes
 
 | Code | Meaning |
 |------|---------|
 | `200` | fine |
-| `400` | empty message, or the query sent is invalid (`detail` explains) |
+| `400` | empty message, unknown `model`, or the query sent is invalid (`detail` explains) |
 | `401` | `SPOT_API_KEY` is set and `X-API-Key` is missing or wrong |
-| `502` | the language model could not be reached (`detail` explains) |
+| `413` / `422` | the request is too large or a field has the wrong shape |
+| `429` | too many messages from this client (`Retry-After` says how long to wait) |
+| `502` | the language model could not be reached (the reason is in the server log) |
 
 A turn takes a few seconds because the model may call several tools, so allow a generous client
 timeout and show a typing indicator. Full reference with more examples: **[API.md](./API.md)**.
@@ -225,13 +243,52 @@ that produce no YAML, `--sheet` to pick a gold sheet.
 
 ---
 
+## 🛡️ Behaviour test sets
+
+The gold standard only has one-shot sentences. What the bot declines, how it handles prompt
+injection, several turns and requests the query cannot express is tested with the sets in
+`testsets/`:
+
+| File | Tests |
+|---|---|
+| `safety.yaml` | harmful requests per category, their harmless twins, off-topic, abuse |
+| `injection.yaml` | injected instructions in the message, the query, the history and tag search results |
+| `dialogues.yaml` | edits, references, corrections, manual edits, long chats, safety across turns |
+| `limits.yaml` | unsupported requests: the supported part is built, the rest is reported |
+
+```bash
+python run_testsets.py --workers 4                                   # all four sets
+python run_testsets.py --gold goldstandard_testing_dataset.xlsx      # + dialogues derived from the gold standard
+python run_testsets.py --section A --group self_harm,benign_twin     # a part of them
+python run_testsets.py --gold goldstandard_testing_dataset.xlsx --list   # read the cases, call no model
+python run_testsets.py --repeat 3                                    # is the result the same every time?
+```
+
+Each case is played like a chat through the API and every turn is checked. The summary gives
+the cases passed per group, and separately under-blocking (a harmful request was answered),
+over-blocking (a harmless one was declined), limits missed or reported without reason, and
+queries that differ from their gold. Output:
+
+- `testset_results.xlsx` — one row per turn: what was expected, what happened, which check failed
+- `testset_results.jsonl` + `testset_gold.xlsx` (sheet `testsets`) — the turns that have a gold
+  query, as a prediction file and a gold sheet for SPOT's benchmarking scripts
+
+With `--gold`, more dialogues are derived from the gold sentences: the chat starts with the gold
+query and asks for one mechanical edit (new distance, new area, drop an object, ...), or builds
+the gold query one object per message. The expected query is computed by the tools; only the
+wording comes from templates in `testsets/derive.py`. The case format is described at the top of
+`testsets/cases.py`.
+
+---
+
 ## 🧪 Tests
 
 ```bash
 python -m pytest -q
 ```
 
-Covers the tools, validation, the chat loop, the tag search integration and the API. The gold
+Covers the tools, validation, the chat loop, the tag search integration and the API, and that the
+behaviour test sets load and are scored as described (without calling the model). The gold
 round-trip test additionally needs `goldstandard_testing_dataset.xlsx` in the repository root.
 
 ---
