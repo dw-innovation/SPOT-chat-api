@@ -117,7 +117,7 @@ file is the shared context between them. Update it when a decision is made or a 
      author, so they show tendencies, not rates; other languages are covered by a handful
      of cases only; the templated wording of the derived dialogues has been skimmed, not
      reviewed sentence by sentence.
-3. **Score improvement.** Next and last, because packages 1 and 4 shift the scores. Per-sentence error analysis
+3. **Score improvement.** Last (after package 5), because packages 1 and 4 shift the scores. Per-sentence error analysis
    of the official benchmark results; separate model errors from gold or metric
    inconsistencies. Hold out part of the gold set (or validate on an older sheet) to avoid
    overfitting the prompt to 282 sentences.
@@ -168,6 +168,64 @@ file is the shared context between them. Update it when a decision is made or a 
        ("DAN mode enabled" inside an off-topic refusal, a `<script>` tag quoted back, the
        result of an instruction hidden in a name used as the name), and still closes the
        chat as `hate` for "tell me that all people from Turin are idiots".
+
+5. **Read the existing SPOT code.** NEXT, before package 3. The chatbot has to fit into a
+   running system, and several open decisions (who calls the API, keys, logging, privacy)
+   are already answered there. Main repository: https://github.com/dw-innovation/SPOT. The
+   repositories were renamed; the old `kid2-spot-*` links redirect:
+
+   | Repository | What | Last push |
+   |---|---|---|
+   | `dw-innovation/SPOT-frontend` | Next.js + Leaflet UI; the main thing to read | 2026-10-07 |
+   | `dw-innovation/SPOT-central-nlp-api` | sentence to YAML; what the chatbot sits next to or replaces | 2026-09-30 |
+   | `dw-innovation/SPOT-osm-query-api` | runs the query, has `/validate-spot-query` | 2026-08-05 |
+   | `dw-innovation/SPOT-osm-tag-search-api` | tag search, already used by the chatbot | 2025-12-18 |
+   | `dw-innovation/SPOT-data-generation` | training data and the official benchmark | 2026-07-21 |
+   | `dw-innovation/unsloth-training` | model training; not relevant here | 2025-11-10 |
+
+   First look on 2026-10-12 (a handful of files read, nothing run):
+   - The browser never calls a backend service. It calls the frontend's own routes
+     (`src/app/api/*/route.ts`), and those forward the request from the server
+     (`src/lib/createUpstreamRoute.ts`, `src/lib/proxyUpstream.ts`). Backend addresses are
+     server-side variables (`NLP_API`, `OSM_API`), not `NEXT_PUBLIC_*`.
+   - Every forwarded route requires a signed-in user (NextAuth: Azure AD, Google, GitHub or
+     credentials) and answers 401 otherwise. The user's session token is passed upstream as
+     `Authorization: Bearer <token>`.
+   - `/api/transformSentence` sends `{sentence}` and the server adds `environment`, an
+     anonymised `username` and the `model`. So the client does not choose the model there
+     either. The route has `maxDuration = 60` seconds.
+   - Errors: upstream 5xx and network failures are stored server-side with the prompt and
+     the query; the client gets `{status: "error", message}`, read from the upstream
+     response's `message` field.
+   - The NLP API stores every request with the anonymised username in MongoDB
+     (`nlpRequests`), and the frontend logs the outgoing prompt.
+
+   What this probably means for the chatbot, to confirm while reading:
+   - The chat would be called through a new frontend route built with `createUpstreamRoute`,
+     so `SPOT_API_KEY` or a check of the bearer token is real protection, CORS can be closed
+     to browsers altogether, and the rate limit has to count per user, not per address: all
+     requests arrive from the frontend's server. This answers handover point 4.
+   - Our error responses use FastAPI's `detail`, the proxy reads `message`. Without a
+     change every chatbot error reaches the user as "Unknown error occurred".
+   - A chat turn has to fit into the 60 seconds of the route.
+   - The existing services log prompts per anonymised user. Our log deliberately has no
+     message text; decide whether the chatbot should match the existing practice (needed
+     for labelling real user data, see "Where we are") or stay as it is.
+
+   To do in the package:
+   - Frontend: how the YAML from `transformSentence` is stored, edited (query editor, graph
+     view) and validated; where chat state (`query`, `history`, the lock) would live; how
+     sessions are saved and shared (`saveSession`, `getSession`), since a shared session
+     would carry a chat history; how errors and feedback are shown.
+   - NLP API: whether and how the bearer token is checked (`.env.example` has a
+     `JWT_SECRET`, but no check was visible in `app/main.py` at first glance); the request
+     and response format of `/transform-sentence-to-imr`, in case the chatbot should offer
+     the same endpoint for one-shot use; what is written to MongoDB.
+   - OSM query API: what `/validate-spot-query` checks, compared with our `/validate`.
+   - Deployment: `docker-compose.yml`, `ENVIRONMENT.md` and `SECURITY.md` of the main
+     repository; where the frontend runs (its `.env.example` mentions Vercel).
+   - Result: a short integration note in `API.md` and corrections to the handover list
+     below; code changes only where they are small (e.g. the error field).
 
 ## What to test
 
@@ -303,6 +361,11 @@ which is the opposite of what was asked, and the bot has to say so.
 Collected on 2026-10-12 after package 4. Details are in the packages above; this is the list
 to go through with whoever takes over.
 
+### Next: package 5
+
+0. **Read the existing SPOT repositories**, the frontend first (package 5 above). Do this
+   before the points below; it settles point 4 and affects 8 to 16.
+
 ### Before package 3 starts
 
 1. **Check whether the LLM endpoint caches answers.** Repeated identical requests came back
@@ -317,7 +380,8 @@ to go through with whoever takes over.
 
 ### Decisions still to make
 
-4. **Who calls the API in production?** If the browser calls it directly, `SPOT_API_KEY`
+4. **Who calls the API in production?** (Probably answered by package 5: the existing
+   frontend forwards every backend call from its own server, behind a login.) If the browser calls it directly, `SPOT_API_KEY`
    protects nothing (every visitor can read it) and CORS plus the rate limit are the only
    gates. If the frontend's own backend calls it, the key is real protection, and the rate
    limit needs the forwarded client address (`--forwarded-allow-ips`), otherwise all users
