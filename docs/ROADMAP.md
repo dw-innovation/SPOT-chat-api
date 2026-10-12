@@ -515,9 +515,9 @@ to go through with whoever takes over.
    with `--no-cache`. `--repeat` now measures real variation; the package 2 and package 4
    baselines were taken with the cache on, so use the uncached numbers of package 3.
 2. **Re-run the official benchmark.** DONE in package 3: `chat-03`, 69.4% perfect match.
-3. **Push the work.** Still open. Packages 1, 2 and 4 are committed together on `master`
-   (their changes overlap in the same files); packages 3 and 5 are in the working tree, not
-   committed. The repository has no remote yet.
+3. **Push the work.** DONE 2026-10-12: pushed to `dw-innovation/SPOT-chat-api`. The repository
+   there held the first version of 2026-09-29 with a history of its own; it was merged, so
+   both histories are kept.
 
 ### Decisions still to make
 
@@ -542,8 +542,9 @@ to go through with whoever takes over.
 7b. **Markdown in replies.** The frontend renders replies as Markdown; package 4 said plain
    text. `API.md` now allows Markdown with links and images switched off. Confirm, or ask
    for plain text.
-7c. **Where the repository lives.** The frontend branch links `dw-innovation/kid2-spot-chat`,
-   which does not exist; this repository has no remote (point 3).
+7c. **Where the repository lives.** ANSWERED 2026-10-12:
+   https://github.com/dw-innovation/SPOT-chat-api (branch `main`). The frontend branch still
+   links `dw-innovation/kid2-spot-chat`, which does not exist.
 
 ### To tell the frontend developer
 

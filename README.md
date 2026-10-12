@@ -29,7 +29,7 @@ The output is the same YAML the rest of SPOT already consumes, so it plugs into
 ## 📦 Architecture Overview
 
 ```
-kid2-spot-chat/
+SPOT-chat-api/
 ├── api.py                  # HTTP API (FastAPI): /chat, /validate, /health
 ├── app.py                  # Gradio demo UI (Hugging Face Space)
 ├── spot_chat/
@@ -58,8 +58,8 @@ kid2-spot-chat/
 ### With Docker
 
 ```bash
-git clone https://github.com/dw-innovation/kid2-spot-chat.git
-cd kid2-spot-chat
+git clone https://github.com/dw-innovation/SPOT-chat-api.git
+cd SPOT-chat-api
 cp .env.example .env        # fill in LLM_API_KEY and LLM_BASE_URL
 docker compose up --build   # http://localhost:8000
 ```
@@ -341,6 +341,6 @@ to get started. Also see our [Code of Conduct](https://github.com/dw-innovation/
 
 ## 📜 License
 
-Licensed under [AGPLv3](../LICENSE).
+Licensed under [AGPLv3](./LICENSE).
 
 © Deutsche Welle Research & Cooperation Projects
