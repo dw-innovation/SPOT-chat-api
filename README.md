@@ -8,8 +8,8 @@ of translating a single sentence in one shot. Users can correct, extend and narr
 over several messages: *"make it 200 m"*, *"add a bus stop nearby"*, *"search in Bonn instead"*.
 
 The output is the same YAML the rest of SPOT already consumes, so it plugs into
-[`osm-tag-search-api`](https://github.com/dw-innovation/kid2-spot-osm-tag-search-api) and
-[`osm-query-api`](https://github.com/dw-innovation/kid2-spot-osm-query-api) unchanged.
+[`osm-tag-search-api`](https://github.com/dw-innovation/SPOT-osm-tag-search-api) and
+[`osm-query-api`](https://github.com/dw-innovation/SPOT-osm-query-api) unchanged.
 
 ---
 
@@ -20,9 +20,14 @@ The output is the same YAML the rest of SPOT already consumes, so it plugs into
 - 🏷️ Grounded in SPOT's tag bundles — object names, properties and colours are checked against the
   descriptor tables and [SPOT's tag search](https://tags.findthatspot.io/)
 - 📏 Relative spatial terms ("next to", "nearby") resolved from SPOT's official lookup table
+- 🛡️ Safeguards: searches with a stated harmful purpose and off-topic messages are declined, with
+  a supportive reply and a helpline link for self-harm
+- 🚧 Says what a search cannot express (directions, minimum distances, opening hours, …) instead
+  of dropping it silently
 - 🤖 Works with any OpenAI-compatible endpoint (GPT-OSS, GPT-5, local Ollama, …) — no fine-tuning
 - 🐳 Stateless, Dockerized HTTP API
 - 📊 Benchmark runner against the gold standard, exporting SPOT's JSONL result format
+- 🧪 Behaviour test sets for refusals, prompt injection, multi-turn chats and unsupported requests
 
 ---
 
@@ -104,6 +109,7 @@ Copy `.env.example` to `.env` and fill it in.
 | Variable | Description |
 |----------|-------------|
 | `SPOT_TAG_SEARCH_URL` | Tag search endpoint, default `https://tags.findthatspot.io/api/search`; empty disables it. |
+| `SPOT_TAG_SEARCH_TIMEOUT` | Seconds to wait for the tag search (default `4`); the local table is used if it does not answer. |
 | `SPOT_BUNDLES_PATH` | Tag-bundle spreadsheet, default `data/SPOT_OSM-tag-bundles.xlsx`. |
 | `SPOT_COLOURS_PATH` | Colour table, default `data/spot_colours.csv`. |
 | `SPOT_MAX_ENTITIES`, `SPOT_MAX_PROPERTIES` | Query size SPOT is trained for (default `3` each). |
@@ -205,9 +211,13 @@ model (`"400 meters"` → `"400 m"`, entity ids renumbered). Returns
 | `200` | fine |
 | `400` | empty message, unknown `model`, or the query sent is invalid (`detail` explains) |
 | `401` | `SPOT_API_KEY` is set and `X-API-Key` is missing or wrong |
-| `413` / `422` | the request is too large or a field has the wrong shape |
+| `411` / `413` / `422` | no `Content-Length`, the request is too large, or a field has the wrong shape |
 | `429` | too many messages from this client (`Retry-After` says how long to wait) |
 | `502` | the language model could not be reached (the reason is in the server log) |
+| `504` | the turn took longer than `LLM_TURN_TIMEOUT`; nothing was changed |
+
+Every error body is `{"status": "error", "message": …, "detail": …}`; `message` is one sentence
+that is safe to show to the user.
 
 A turn takes a few seconds because the model may call several tools, so allow a generous client
 timeout and show a typing indicator. Full reference with more examples: **[API.md](./API.md)**.
@@ -217,15 +227,20 @@ timeout and show a typing indicator. Full reference with more examples: **[API.m
 ## 🧠 How a message is processed
 
 1. The message goes to the model together with the current query, the recent history, and the
-   SPOT vocabulary found in the message (typos corrected).
+   SPOT vocabulary found in the message (typos corrected, names in other scripts pointed out).
+   If an earlier turn was declined for harmful intent, the message is declined without calling
+   the model.
 2. The model calls tools: `new_query` for a new search, or small editing tools
-   (`add_entities`, `update_relation`, `remove_properties`, …).
+   (`add_entities`, `update_relation`, `remove_properties`, …). A message with a stated harmful
+   purpose, or one that is not about map search, gets `decline` instead; parts the query cannot
+   express are recorded with `report_limitations`.
 3. Each call is validated in plain Python: no OSM tags as names, locations belong in the area,
    property types follow the tag table, distances are normalised (`"1,200 meters"` → `"1200 m"`),
    spatial terms get their distance from SPOT's lookup table, cluster distances and entity ids are
    filled in. A call that breaks a rule changes nothing and comes back with an explanation.
 4. Names are checked against the descriptor tables and the tag search API. The model is told what
-   SPOT would search for, or which descriptor the user's own wording matches.
+   SPOT would search for, or which descriptor the user's own wording matches. A name the user
+   chose stays as written (typos fixed), because SPOT's tag search resolves it afterwards.
 5. The model fixes what the tools reported, then answers in one or two sentences.
 
 ---
@@ -314,7 +329,7 @@ round-trip test additionally needs `goldstandard_testing_dataset.xlsx` in the re
 ## 🧩 Part of the SPOT System
 
 This module replaces the one-shot sentence → YAML step of
-[`central-nlp-api`](https://github.com/dw-innovation/kid2-spot-central-nlp-api) with a
+[`central-nlp-api`](https://github.com/dw-innovation/SPOT-central-nlp-api) with a
 conversation. It produces the same YAML, so tag search, OSM query and the map frontend stay as
 they are.
 
@@ -322,11 +337,11 @@ they are.
 
 ## 🔗 Related Docs
 
-- [Main SPOT Repo](https://github.com/dw-innovation/kid2-spot)
-- [Frontend UI](https://github.com/dw-innovation/kid2-spot-frontend)
-- [Central NLP API](https://github.com/dw-innovation/kid2-spot-central-nlp-api)
-- [OSM Tag Search API](https://github.com/dw-innovation/kid2-spot-osm-tag-search-api)
-- [OSM Query API](https://github.com/dw-innovation/kid2-spot-osm-query-api)
+- [Main SPOT Repo](https://github.com/dw-innovation/SPOT)
+- [Frontend UI](https://github.com/dw-innovation/SPOT-frontend)
+- [Central NLP API](https://github.com/dw-innovation/SPOT-central-nlp-api)
+- [OSM Tag Search API](https://github.com/dw-innovation/SPOT-osm-tag-search-api)
+- [OSM Query API](https://github.com/dw-innovation/SPOT-osm-query-api)
 - [Tag bundles viewer & editor](https://tags.findthatspot.io/)
 
 ---
@@ -334,8 +349,8 @@ they are.
 ## 🙌 Contributing
 
 We welcome contributions of all kinds — from developers, journalists, mappers, and more!
-See [CONTRIBUTING.md](https://github.com/dw-innovation/kid2-spot/blob/main/CONTRIBUTING.md) for how
-to get started. Also see our [Code of Conduct](https://github.com/dw-innovation/kid2-spot/blob/main/CODE_OF_CONDUCT.md).
+See [CONTRIBUTING.md](https://github.com/dw-innovation/SPOT/blob/main/CONTRIBUTING.md) for how
+to get started. Also see our [Code of Conduct](https://github.com/dw-innovation/SPOT/blob/main/CODE_OF_CONDUCT.md).
 
 ---
 
