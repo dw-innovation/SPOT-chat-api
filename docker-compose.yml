@@ -1,7 +1,8 @@
 services:
   spot-chat-api:
     build: .
-    image: spot-chat-api:latest
+    # Same image the SPOT stack pulls (built by .github/workflows/build-image.yml)
+    image: ghcr.io/dw-innovation/spot-chat-api:${CHAT_API_TAG:-main}
     ports:
       - "8000:8000"
     env_file:
